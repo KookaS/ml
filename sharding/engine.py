@@ -195,6 +195,11 @@ class JaxShardedEngine:
             'min': lax.pmin,
             # 'prod': lax.pprod,
         }
+
+        self._reduce_scatter_ops: dict[str, Callable] = {
+            'sum': lax.psum_scatter,
+            # Only psum_scatter exists in JAX
+        }
     
     # =========================================================================
     # Properties
@@ -380,100 +385,81 @@ class JaxShardedEngine:
     def all_gather(
         self,
         arr: jax.Array,
-        axis: AxisName,
+        axis_name: AxisName,
         *,
-        gather_axis: int = 0,
+        axis_idx: int = 0,
         tiled: bool = False,
     ) -> jax.Array:
         """
         Gather arrays from all devices along specified mesh axis/axes.
-        
+
         Concatenates array shards from devices along the given mesh axis.
         All devices receive the complete gathered result.
-        
+
         Args:
             arr: Local array shard on this device.
-            axis: Mesh axis name(s) to gather across. Can be a single
+            axis_name: Mesh axis name(s) to gather across. Can be a single
                 string or tuple of strings for multi-axis gather.
-            gather_axis: Array axis along which to concatenate gathered
+            axis_idx: Array axis along which to concatenate gathered
                 data. Default: 0
-            tiled: If True, output shape along gather_axis equals input
-                shape. If False, output expands by factor of axis size.
-        
+            tiled: If True, input is a tile of the full array (dimension
+                is multiplied by axis size). If False, each device has
+                identical data (dimension unchanged). Default: False
+
         Returns:
             jax.Array: Gathered array, replicated across the specified
                 mesh axis/axes.
-        
-        Diagram (2×4 mesh, gather across 'dp'):
-            Before (dp=0):  [A0, A1, A2, A3]    After: [A0, A1, A2, A3,
-            Before (dp=1):  [B0, B1, B2, B3]            B0, B1, B2, B3]
-            (4 tp-devices each)                 (all 8 devices see this)
-        
+
+        Diagram (4 devices along 'Y', tiled=True):
+            Before: each device has [B, D/4]
+            After:  each device has [B, D]
+
         Example:
-            >>> @engine.sharded(in_specs=P('dp', 'tp'), out_specs=P(None, 'tp'))
-            ... def gather_across_dp(x):
-            ...     return engine.all_gather(x, axis='dp', gather_axis=0)
-            
-            >>> # Multi-axis gather
-            >>> @engine.sharded(in_specs=P('dp', 'tp'), out_specs=P())
-            ... def gather_all(x):
-            ...     return engine.all_gather(x, axis=('dp', 'tp'))
-        
+            >>> @engine.sharded(in_specs=P(None, 'Y'), out_specs=P(None, None))
+            ... def gather_features(x):
+            ...     return engine.all_gather(x, axis_name='Y', axis_idx=1, tiled=True)
+
         Note:
-            Must be called within a parallel context (pmap/shard_map).
+            Must be called within a parallel context (shard_map).
         """
-        return lax.all_gather(arr, axis, axis=gather_axis, tiled=tiled)
+        return lax.all_gather(arr, axis_name=axis_name, axis=axis_idx, tiled=tiled)
     
     def all_reduce(
         self,
         arr: jax.Array,
-        axis: AxisName,
+        axis_name: AxisName,
         op: ReduceOp = 'sum',
     ) -> jax.Array:
         """
         Reduce arrays across devices along specified mesh axis/axes.
-        
+
         Applies a reduction operation element-wise across the given mesh
         axis. All devices receive the identical reduced result.
-        
+
         Args:
             arr: Local array on this device.
-            axis: Mesh axis name(s) to reduce across. Can be a single
+            axis_name: Mesh axis name(s) to reduce across. Can be a single
                 string or tuple for multi-axis reduction.
-            op: Reduction operation: 'sum', 'mean', 'max', 'min', 'prod'.
+            op: Reduction operation: 'sum', 'mean', 'max', 'min'.
                 Default: 'sum'
-        
+
         Returns:
             jax.Array: Reduced array with same shape as input.
-        
+
         Raises:
             KeyError: If op is not recognized.
-        
-        Diagram (2×4 mesh, reduce across 'dp' with sum):
-            dp=0, tp=0: [1, 2]  ┐                   
-            dp=1, tp=0: [3, 4]  ┴─→ tp=0 gets: [4, 6]
-            
-            dp=0, tp=1: [5, 6]  ┐                   
-            dp=1, tp=1: [7, 8]  ┴─→ tp=1 gets: [12, 14]
-        
+
+        Diagram (2 devices along 'Y', sum):
+            Y=0: [1, 2]  ┐
+            Y=1: [3, 4]  ┴─→ both get: [4, 6]
+
         Example:
-            >>> # Sync gradients across data-parallel axis only
-            >>> @engine.sharded(in_specs=P('dp', 'tp'), out_specs=P('dp', 'tp'))
-            ... def sync_grads_dp(grads):
-            ...     return engine.all_reduce(grads, axis='dp', op='mean')
-            
-            >>> # Reduce across both axes
-            >>> @engine.sharded(in_specs=P('dp', 'tp'), out_specs=P())
-            ... def global_sum(x):
-            ...     return engine.all_reduce(x, axis=('dp', 'tp'), op='sum')
-        
-        Use Cases:
-            - Gradient averaging across data-parallel replicas
-            - Global statistics computation
-            - Loss aggregation
-        
+            >>> @engine.sharded(in_specs=P(None, 'Y'), out_specs=P(None, None))
+            ... def sync_grads(grads):
+            ...     return engine.all_reduce(grads, axis_name='Y', op='sum')
+
         Note:
-            Must be called within a parallel context (pmap/shard_map).
+            Must be called within a parallel context (shard_map).
         """
         reduce_fn = self._reduce_ops.get(op)
         if reduce_fn is None:
@@ -481,159 +467,187 @@ class JaxShardedEngine:
                 f"Unknown reduction op '{op}'. "
                 f"Available: {list(self._reduce_ops.keys())}"
             )
-        return reduce_fn(arr, axis)
+        return reduce_fn(arr, axis_name)
+
+    def reduce_scatter(
+        self,
+        arr: jax.Array,
+        axis_name: AxisName,
+        *,
+        axis_idx: int = 0,
+        tiled: bool = False,
+        op: ReduceOp = 'sum',
+    ) -> jax.Array:
+        """
+        Reduce across devices, then scatter result chunks.
+
+        Combines all-reduce and scatter: reduces across devices, then each
+        device receives 1/N of the reduced array along axis_idx.
+
+        Args:
+            arr: Local array on this device.
+            axis_name: Mesh axis name to reduce-scatter across.
+            axis_idx: Array axis along which to scatter. Default: 0
+            tiled: If True, scatter_dimension is divided by axis size.
+                If False, scatter_dimension must equal axis size. Default: False
+            op: Reduction operation: 'sum', 'mean'. Default: 'sum'
+
+        Returns:
+            jax.Array: Reduced and scattered array (1/N of full result).
+
+        Diagram (4 devices along 'Y', tiled=True):
+            Before: each device has [B, D] (partial sums)
+            After:  each device has [B, D/4]
+
+        Example:
+            >>> @engine.sharded(in_specs=P(None, None), out_specs=P(None, 'Y'))
+            ... def reduce_scatter_features(x):
+            ...     return engine.reduce_scatter(x, axis_name='Y', axis_idx=1, tiled=True)
+
+        Note:
+            Must be called within a parallel context (shard_map).
+        """
+        if op == 'mean':
+            # Manual implementation: sum then divide
+            n = lax.psum(1, axis_name)
+            return lax.psum_scatter(arr, axis_name, scatter_dimension=axis_idx, tiled=tiled) / n
+
+        scatter_fn = self._reduce_scatter_ops.get(op)
+        if scatter_fn is None:
+            raise KeyError(
+                f"Unknown scatter op '{op}'. Available: {list(self._reduce_scatter_ops.keys()) + ['mean']}"
+            )
+        return scatter_fn(arr, axis_name, scatter_dimension=axis_idx, tiled=tiled)
     
     def all_to_all(
         self,
         arr: jax.Array,
-        axis: str,
-        split_axis: int = 0,
-        concat_axis: int = 0,
+        axis_name: AxisName,
+        *,
+        split_axis_idx: int = 0,
+        concat_axis_idx: int = 0,
+        tiled: bool = False,
     ) -> jax.Array:
         """
         Redistribute array chunks across devices along a mesh axis.
-        
-        Splits each device's array along split_axis into N chunks (N =
+
+        Splits each device's array along split_axis_idx into N chunks (N =
         axis size), exchanges chunks so chunk i goes to device i along
-        that mesh axis, then concatenates along concat_axis.
-        
+        that mesh axis, then concatenates along concat_axis_idx.
+
         Args:
-            arr: Local array. split_axis size must be divisible by the
+            arr: Local array. split_axis_idx size must be divisible by the
                 mesh axis size.
-            axis: Single mesh axis name to perform all-to-all across.
-            split_axis: Array axis to split into chunks. Default: 0
-            concat_axis: Array axis to concatenate received chunks. Default: 0
-        
+            axis_name: Single mesh axis name to perform all-to-all across.
+            split_axis_idx: Array axis to split into chunks. Default: 0
+            concat_axis_idx: Array axis to concatenate received chunks. Default: 0
+            tiled: If True, dimensions are scaled by axis size. Default: False
+
         Returns:
             jax.Array: Redistributed array.
-        
-        Diagram (4 devices along 'tp' axis):
+
+        Diagram (4 devices along 'Y'):
             Before:                     After:
-            tp=0: [A0, A1, A2, A3]      tp=0: [A0, B0, C0, D0]
-            tp=1: [B0, B1, B2, B3]  →   tp=1: [A1, B1, C1, D1]
-            tp=2: [C0, C1, C2, C3]      tp=2: [A2, B2, C2, D2]
-            tp=3: [D0, D1, D2, D3]      tp=3: [A3, B3, C3, D3]
-        
+            Y=0: [A0, A1, A2, A3]      Y=0: [A0, B0, C0, D0]
+            Y=1: [B0, B1, B2, B3]  →   Y=1: [A1, B1, C1, D1]
+            Y=2: [C0, C1, C2, C3]      Y=2: [A2, B2, C2, D2]
+            Y=3: [D0, D1, D2, D3]      Y=3: [A3, B3, C3, D3]
+
         Example:
-            >>> # Switch from batch-sharded to head-sharded
-            >>> @engine.sharded(
-            ...     in_specs=P('dp', None, None),
-            ...     out_specs=P(None, 'dp', None)
-            ... )
-            ... def reshard_batch_to_heads(x):
-            ...     # x: (batch/dp, heads, dim) → (batch, heads/dp, dim)
-            ...     return engine.all_to_all(x, axis='dp', split_axis=1, concat_axis=0)
-        
-        Use Cases:
-            - Switching between parallelism strategies mid-computation
-            - Attention: batch-sharded ↔ head-sharded
-            - Expert routing in MoE models
-        
+            >>> @engine.sharded(in_specs=P('Y', None), out_specs=P(None, 'Y'))
+            ... def reshard(x):
+            ...     return engine.all_to_all(x, axis_name='Y', split_axis_idx=1, concat_axis_idx=0)
+
         Note:
-            Must be called within a parallel context.
-            Only single axis supported (not tuple of axes).
+            Must be called within a parallel context (shard_map).
         """
         return lax.all_to_all(
             arr,
-            axis,
-            split_axis=split_axis,
-            concat_axis=concat_axis,
+            axis_name=axis_name,
+            split_axis=split_axis_idx,
+            concat_axis=concat_axis_idx,
+            tiled=tiled,
         )
     
     def ppermute(
         self,
         arr: jax.Array,
-        axis: str,
+        axis_name: AxisName,
         permutation: list[tuple[int, int]],
     ) -> jax.Array:
         """
         Permute array data between devices along a mesh axis.
-        
+
         Routes arrays according to (src, dst) pairs. Each entry sends
         the array from device src to device dst along the specified axis.
         Devices not receiving data get zeros.
-        
+
         Args:
             arr: Local array to route.
-            axis: Mesh axis along which to permute.
+            axis_name: Mesh axis along which to permute.
             permutation: List of (source, destination) device index pairs.
                 Indices are relative to the specified axis (0 to axis_size-1).
-        
+
         Returns:
             jax.Array: Received array from routed source, or zeros.
-        
-        Diagram (ring shift right on 4-device 'tp' axis):
+
+        Diagram (ring shift right on 4-device 'Y' axis):
             permutation = [(0,1), (1,2), (2,3), (3,0)]
-            
+
             Before:         After:
-            tp=0: [A]       tp=0: [D]
-            tp=1: [B]   →   tp=1: [A]
-            tp=2: [C]       tp=2: [B]
-            tp=3: [D]       tp=3: [C]
-        
+            Y=0: [A]       Y=0: [D]
+            Y=1: [B]   →   Y=1: [A]
+            Y=2: [C]       Y=2: [B]
+            Y=3: [D]       Y=3: [C]
+
         Example:
-            >>> # Ring shift along tensor-parallel axis
-            >>> @engine.sharded(in_specs=P('dp', 'tp'), out_specs=P('dp', 'tp'))
+            >>> @engine.sharded(in_specs=P(None, 'Y'), out_specs=P(None, 'Y'))
             ... def ring_shift(x):
-            ...     n = engine.axis_size('tp')
+            ...     n = engine.axis_size('Y')
             ...     perm = [(i, (i + 1) % n) for i in range(n)]
-            ...     return engine.ppermute(x, axis='tp', permutation=perm)
-            
-            >>> # Halo exchange for stencil operations
-            >>> @engine.sharded(in_specs=P('dp'), out_specs=P('dp'))
-            ... def get_left_neighbor(x):
-            ...     n = engine.axis_size('dp')
-            ...     # Each device receives from its left neighbor
-            ...     perm = [((i + 1) % n, i) for i in range(n)]
-            ...     return engine.ppermute(x, axis='dp', permutation=perm)
-        
-        Use Cases:
-            - Ring-allreduce implementations
-            - Halo exchanges for spatial parallelism
-            - Pipeline stage communication
-            - Butterfly/hypercube patterns
-        
+            ...     return engine.ppermute(x, axis_name='Y', permutation=perm)
+
         Note:
-            Must be called within a parallel context.
+            Must be called within a parallel context (shard_map).
         """
-        return lax.ppermute(arr, axis, permutation)
+        return lax.ppermute(arr, axis_name, permutation)
     
     def pbroadcast(
         self,
         arr: jax.Array,
-        axis: str,
+        axis_name: AxisName,
         source: int = 0,
     ) -> jax.Array:
         """
         Broadcast array from one device to all others along a mesh axis.
-        
+
         Takes the array from source device and replicates it to all devices
         along the specified axis. Arrays on non-source devices are overwritten.
-        
+
         Args:
             arr: Local array. Only source device's array is used.
-            axis: Mesh axis along which to broadcast.
+            axis_name: Mesh axis along which to broadcast.
             source: Device index (0-indexed along the axis) to broadcast from.
-        
+
         Returns:
             jax.Array: Source device's array, replicated along the axis.
-        
-        Diagram (broadcast from tp=0 on 4-device 'tp' axis):
+
+        Diagram (broadcast from Y=0 on 4-device 'Y' axis):
             Before:         After:
-            tp=0: [A]       tp=0: [A]
-            tp=1: [B]   →   tp=1: [A]
-            tp=2: [C]       tp=2: [A]
-            tp=3: [D]       tp=3: [A]
-        
+            Y=0: [A]       Y=0: [A]
+            Y=1: [B]   →   Y=1: [A]
+            Y=2: [C]       Y=2: [A]
+            Y=3: [D]       Y=3: [A]
+
         Example:
-            >>> @engine.sharded(in_specs=P('dp', 'tp'), out_specs=P('dp', None))
-            ... def broadcast_from_tp0(x):
-            ...     return engine.pbroadcast(x, axis='tp', source=0)
-        
+            >>> @engine.sharded(in_specs=P(None, 'Y'), out_specs=P(None, None))
+            ... def broadcast_from_y0(x):
+            ...     return engine.pbroadcast(x, axis_name='Y', source=0)
+
         Note:
-            Must be called within a parallel context.
+            Must be called within a parallel context (shard_map).
         """
-        return lax.pbroadcast(arr, axis, source=source)
+        return lax.pbroadcast(arr, axis_name, source=source)
     
     # =========================================================================
     # Local Device Queries (inside parallel contexts)
