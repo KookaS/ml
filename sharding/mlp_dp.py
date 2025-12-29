@@ -51,6 +51,7 @@ class MlpDp:
         out = jnp.einsum('bf,fd->bd', a, self.params['w_out'])
         return out, activations
 
+    @partial(jax.jit, static_argnames=('self',))
     def backward(self, grads: jax.Array, activations: jax.Array) -> dict[str, jax.Array]:
         """Backward pass for MLP.
         
