@@ -19,19 +19,21 @@ if __name__ == "__main__":
     model = Mlp(mesh)
 
     """
-    - batch sharding to divide the compute of the different inputs
+    Keeps the Weights local and stable, moves the Data.
+    - Input is sharded along D dimension to avoid storing the entire input, required during backprop
+    - Win and Wout are sharded along contracting dimension to shard the compute
     """
-    x = jnp.ones((B,D), dtype=jnp.bfloat16, device=NamedSharding(model.mesh, P('X', None)))
+    x = jnp.ones((B,D), dtype=jnp.bfloat16, device=NamedSharding(model.mesh, P(None, 'Y')))
     inspect_array(x, "X -- Input")
     model.load_checkpoint({
-        'w_in': jnp.ones((D, F), dtype=jnp.float32, device=NamedSharding(model.mesh, P(None, None))),
-        'w_out': jnp.ones((F, D), dtype=jnp.float32, device=NamedSharding(model.mesh, P(None, None))),
+        'w_in': jnp.ones((D, F), dtype=jnp.float32, device=NamedSharding(model.mesh, P(None, 'Y'))),
+        'w_out': jnp.ones((F, D), dtype=jnp.float32, device=NamedSharding(model.mesh, P('Y', None))),
     })
-
+    
     out, activations = model.forward(x)
     inspect_array(out, "Out")
 
-    target = jnp.ones((B,D), dtype=jnp.bfloat16, device=NamedSharding(model.mesh, P('X', None)))
+    target = jnp.ones((B,D), dtype=jnp.bfloat16, device=NamedSharding(model.mesh, P(None, 'Y')))
     grads_in = {
         'layer_out/weights': target-out
     }

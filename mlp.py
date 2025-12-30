@@ -2,24 +2,16 @@ from functools import partial
 from typing import Tuple
 import jax
 import jax.numpy as jnp
-
-B, D, F = 10, 100, 400
-
-@jax.jit
-def relu(x):
-    return x * (x > 0)
-    
+from util import relu
 
 class Mlp:
     """
     Basic MLP
     """
     
-    def __init__(self):
-        self.params: dict[str, jax.Array] = {
-            'w_in': jnp.ones((D, F)),
-            'w_out': jnp.ones((F, D)),
-        }
+    def __init__(self, mesh):
+        self.mesh = mesh
+        self.params: dict[str, jax.Array] = {}
 
     def load_checkpoint(self, params: dict[str, jax.Array]) -> None:
         """
@@ -72,25 +64,3 @@ class Mlp:
             'layer_out/weights': w_out_grad,
             'layer_in/weights': w_in_grad,
         }
-
-
-if __name__ == "__main__":
-
-    import os
-
-    # Create 8 virtual CPU devices for testing mesh parallelism (must be set before JAX import)
-    os.environ.setdefault("JAX_PLATFORMS", "cpu")
-    os.environ.setdefault("XLA_FLAGS", "--xla_force_host_platform_device_count=8")
-
-    x = jnp.ones((B,D), dtype=jnp.bfloat16)
-
-    model = Mlp()
-    out, activations = model.forward(x)
-    print(out.shape)
-
-    target = jnp.ones((B,D), dtype=jnp.bfloat16)
-    grads = {
-        'layer_out/weights': target-out
-    }
-    grads = model.backward(grads, activations)
-    print(grads['layer_out/weights'].shape, grads['layer_in/weights'].shape)

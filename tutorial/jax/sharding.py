@@ -1,6 +1,6 @@
 import os
 
-from tutorial.jax.util import inspect_array
+from util import inspect_array
 
 # Create 8 virtual CPU devices for testing mesh parallelism (must be set before JAX import)
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
