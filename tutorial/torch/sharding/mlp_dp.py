@@ -62,9 +62,6 @@ B, D, F = 8, 64, 256
 def worker_fn(rank, world_size):
     os.environ['MASTER_ADDR'] = '127.0.0.1'
     os.environ['MASTER_PORT'] = '29500'
-    # Force Gloo to use the specific Windows Loopback interface.
-    # This is the standard name for localhost networking on Windows.
-    os.environ['GLOO_SOCKET_IFNAME'] = 'Loopback Pseudo-Interface 1'
     dist.init_process_group("gloo", rank=rank, world_size=world_size)
 
     # Model Init
