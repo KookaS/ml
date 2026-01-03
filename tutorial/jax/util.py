@@ -74,7 +74,3 @@ def print_memory_stats(step_name=""):
     
     print(f"  Current Usage: {in_use_mb:.2f} MB")
     print(f"  Peak Usage:    {peak_mb:.2f} MB")
-
-@jax.jit
-def relu(x):
-    return x * (x > 0)

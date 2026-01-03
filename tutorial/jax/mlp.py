@@ -2,15 +2,18 @@ from functools import partial
 from typing import Tuple
 import jax
 import jax.numpy as jnp
-from util import relu
+
+
+@jax.jit
+def relu(x):
+    return x * (x > 0)
 
 class Mlp:
     """
     Basic MLP
     """
     
-    def __init__(self, mesh):
-        self.mesh = mesh
+    def __init__(self):
         self.params: dict[str, jax.Array] = {}
 
     def load_checkpoint(self, params: dict[str, jax.Array]) -> None:
@@ -18,9 +21,12 @@ class Mlp:
         Load and shard parameters.
         
         Args:
-            params: Dict with 'w_in' [D, F] and 'w_out' [F, D]
+            params: Dict with 'layer_in/weights' [D, F] and layer_out/weights [F, D]
         """
-        self.params = params
+        self.params = {
+            'layer_in/weights': params['layer_in/weights'],
+            'layer_out/weights': params['layer_out/weights'],
+        }
     
     @partial(jax.jit, static_argnames=('self',))
     def forward(self, x: jax.Array) -> Tuple[jax.Array, jax.Array]:
@@ -33,14 +39,14 @@ class Mlp:
         """
         activations = []
         activations.append(x)
-        h = jnp.einsum('bd,df->bf', x, self.params['w_in'])
+        h = jnp.einsum('bd,df->bf', x, self.params['layer_in/weights'])
         a = relu(h)
         activations.append(a)
-        out = jnp.einsum('bf,fd->bd', a, self.params['w_out'])
+        out = jnp.einsum('bf,fd->bd', a, self.params['layer_out/weights'])
         return out, activations
 
     @partial(jax.jit, static_argnames=('self',))
-    def backward(self, grads: jax.Array, activations: jax.Array) -> dict[str, jax.Array]:
+    def backward(self, out_grad, activations: jax.Array) -> dict[str, jax.Array]:
         """Backward pass for MLP.
         
         1. get dOut[B, D]
@@ -51,11 +57,10 @@ class Mlp:
         5. dWin[D, F] = X^T[D, B] @ H[B, F]
         --> dWin = X^T @ (Activation^-1(dOut @ Wout^T))
         """
-        out_grad = grads['layer_out/weights']
         a = activations.pop()
         w_out_grad = jnp.einsum('bf,bd->fd', a, out_grad)
 
-        a_grad = jnp.einsum('bd,fd->bf', out_grad, self.params['w_out'])
+        a_grad = jnp.einsum('bd,fd->bf', out_grad, self.params['layer_out/weights'])
         h_grad = a_grad * (a_grad > 0)
         x = activations.pop()
         w_in_grad = jnp.einsum('bd,bf->df', x, h_grad)
