@@ -28,6 +28,8 @@ class Mlp:
             'layer_out/weights': params['layer_out/weights'],
         }
     
+    # static_argnames=('self',) is used only for simplicity, for training params are not static
+    # use Flax or Equinox
     @partial(jax.jit, static_argnames=('self',))
     def forward(self, x: jax.Array) -> Tuple[jax.Array, jax.Array]:
         """Forward pass for MLP.
@@ -61,7 +63,7 @@ class Mlp:
         w_out_grad = jnp.einsum('bf,bd->fd', a, out_grad)
 
         a_grad = jnp.einsum('bd,fd->bf', out_grad, self.params['layer_out/weights'])
-        h_grad = a_grad * (a_grad > 0)
+        h_grad = a_grad * (a > 0)
         x = activations.pop()
         w_in_grad = jnp.einsum('bd,bf->df', x, h_grad)
 

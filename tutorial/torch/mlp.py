@@ -1,6 +1,5 @@
 import torch
 from torch import einsum
-from torch.distributed.device_mesh import init_device_mesh
 
 class Mlp:
 
@@ -35,7 +34,7 @@ class Mlp:
         dWout[F, D] = A.T[F, B] @ dOut[B, D]
         
         dA[B, F] = dOut[B, D] @ Wout.T[D, F]
-        dZ[B, F] = dA[B, F] * Act'(Z)[B, F] (same dimension, order does not matter)
+        dZ[B, F] = dA[B, F] * Act'(Z)[B, F] (same dimension, dot-product, order does not matter)
         dWin[D, F] = In.T[D, B] @ dZ[B, F]
 
         Relu derivative = d (x * (x>0)) /dx = x > 0

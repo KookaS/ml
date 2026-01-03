@@ -3,55 +3,37 @@ from torch import einsum
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import os
-class MlpDp:
 
-    def __init__(self):
-        self.params = {}
-        self.activations = []
+from tutorial.torch.mlp import Mlp
 
-    def load_checkpoint(self, params):
-        self.params = {
-            'layer_in/weights': params['layer_in/weights'],
-            'layer_out/weights': params['layer_out/weights'],
-        }
-    
+class MlpDp(Mlp):
+
     def forward(self, x):
         """
         Z[Bx, F] = In[Bx, D] @ Win[D, F]
         A[Bx, F] = Activation (Z)
         Out [Bx, D] = A[Bx, F] @ Wout[F, D]
         """
-        
-        self.activations.append(x)
-        z = einsum('bd,df->bf', x, self.params['layer_in/weights'])
-        self.activations.append(z)
-        a = torch.nn.functional.relu(z)
-        out = einsum('bf,fd->bd', a, self.params['layer_out/weights'])
-        return out
+        super().forward(x)
 
     def backward(self, out_grad):
         """
-        d is partial derivative, go layer by layer
-
-        dWout[F, D] = A.T[F, Bx] @x dOut[Bx, D]
+        dWout[F, D]{Ux} = A.T[F, Bx] @x dOut[Bx, D]
+        dWout[F, D] = AllReduce_x(dWout[F, D]{Ux})
         
         dA[Bx, F] = dOut[Bx, D] @ Wout.T[D, F]
-        dZ[Bx, F] = dA[Bx, F] * Act'(Z)[Bx, F] (same dimension, order does not matter)
-        dWin[D, F] = In.T[D, Bx] @x dZ[Bx, F]
-
-        Relu derivative = d (x * (x>0)) /dx = x > 0
+        dZ[Bx, F] = dA[Bx, F] * Act'(Z)[Bx, F]
+        dWin[D, F]{Ux} = In.T[D, Bx] @x dZ[Bx, F]
+        dWin[D, F] = AllReduce_x(dWin[D, F]{Ux})
         """
-        z = self.activations.pop()
-        a = torch.nn.functional.relu(z)
-        w_out_grad = einsum('bf,bd->fd', a, out_grad)
-        dist.all_reduce(w_out_grad, op=dist.ReduceOp.SUM)
+        grads = super().backward(out_grad)
 
-        a_grad = einsum('bd,fd->bf', out_grad, self.params['layer_out/weights'])
-        
-        z_grad = a_grad * (z > 0)
-        x = self.activations.pop()
-        w_in_grad = einsum('bd,bf->df', x, z_grad)
-        dist.all_reduce(w_in_grad, op=dist.ReduceOp.SUM)
+        w_out_grad = grads['layer_in/weights']
+        w_in_grad = grads['layer_out/weights']
+
+        # average the gradients over all the batch
+        dist.all_reduce(w_out_grad, op=dist.ReduceOp.AVG)
+        dist.all_reduce(w_in_grad, op=dist.ReduceOp.AVG)
 
         return {'layer_out/weights': w_out_grad, 'layer_in/weights': w_in_grad}
 
@@ -75,13 +57,16 @@ def worker_fn(rank, world_size):
 
     # Data Sharding
     B_local = B // world_size
-    torch.manual_seed(rank) # Different data per rank
-    x_local = torch.randn(B_local, D)
-    y_local = torch.randn(B_local, D)
+    start = rank * B_local
+    end = start + B_local
 
+    x = torch.randn(B, D)
+    x_local = x[start:end, :]
     out_local = model.forward(x_local)
+
     # simulated loss gradient (dLoss/dOut)
-    grad_out_local = (out_local - y_local)
+    grad_out = torch.randn(B, D)
+    grad_out_local = grad_out[start:end, :]
     grads = model.backward(grad_out_local)
 
     # Verification

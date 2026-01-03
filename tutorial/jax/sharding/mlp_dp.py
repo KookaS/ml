@@ -32,9 +32,8 @@ if __name__ == "__main__":
     out, activations = model.forward(x)
     inspect_array(out, "Out")
 
-    target = jnp.ones((B,D), dtype=jnp.bfloat16, device=NamedSharding(mesh, P('X', None)))
     # simulated loss gradient (dLoss/dOut)
-    grad_out = out-target
+    grad_out = jnp.ones((B,D), dtype=jnp.bfloat16, device=NamedSharding(mesh, P('X', None)))
     grads = model.backward(grad_out, activations)
     inspect_array(grads['layer_out/weights'], "dWout")
     inspect_array(grads['layer_in/weights'], "dWin")
