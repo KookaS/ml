@@ -3,12 +3,16 @@ from torch import einsum
 
 class Mlp:
 
-    def __init__(self):
+    def __init__(self, d_model, d_ff, device):
         self.activations = []
+        # init the weights for the optimizer
+        self.w_in = torch.zeros((d_model, d_ff), dtype=torch.float32)
+        self.w_out = torch.zeros((d_ff, d_model), dtype=torch.float32)
 
-    def load_checkpoint(self, params, device):
-        self.w_in = params['layer_in/weights'].to(device)
-        self.w_out = params['layer_out/weights'].to(device)
+    def load_checkpoint(self, params):
+        # refill the empty tensors
+        self.w_in[...] = params['layer_in/weights'][...]
+        self.w_out[...] = params['layer_out/weights'][...]
     
     def forward(self, x):
         """
@@ -53,9 +57,8 @@ class Mlp:
         return {'layer_out/weights': w_out_grad, 'layer_in/weights': w_in_grad, 'input': x_grad}
 
 
-B, D, F = 8, 64, 256
-
 if __name__ == "__main__":
+    B, D, F = 8, 64, 256
 
     torch.manual_seed(42)
     x = torch.randn(B, D, dtype=torch.bfloat16)
@@ -65,11 +68,16 @@ if __name__ == "__main__":
         'layer_out/weights': torch.randn(F, D, dtype=torch.float32),
     }
 
-    model = Mlp()
+    model = Mlp(D, F)
     model.load_checkpoint(params)
 
     out = model.forward(x)
 
+    # # Calculate Loss here
+    # loss = (out - target).pow(2).mean()
+    # print(f"Loss: {loss.item()}")
+    # grad_out = 2 * (out - target) / B
+    
     # simulated loss gradient (dLoss/dOut)
     grad_out = torch.randn(B, D, dtype=torch.bfloat16)
     grads = model.backward(grad_out)

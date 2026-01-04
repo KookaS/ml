@@ -8,6 +8,20 @@ from tutorial.torch.mlp import Mlp
 
 class MlpDp(Mlp):
 
+    def __init__(self, rank, d_model, d_ff, device):
+        self.activations = []
+        self.rank = rank
+        self.d_model = d_model
+        self.d_ff = d_ff
+        # init the weights for the optimizer
+        self.w_in = torch.zeros((d_model, d_ff), dtype=torch.float32, device=device)
+        self.w_out = torch.zeros((d_ff, d_model), dtype=torch.float32, device=device)
+
+    def load_checkpoint(self, params):
+        # refill the empty tensors
+        self.w_in[...] = params['layer_in/weights'][...]
+        self.w_out[...] = params['layer_out/weights'][...]
+
     def forward(self, x):
         """
         Z[Bx, F] = X[Bx, D] @ Win[D, F]
@@ -19,12 +33,12 @@ class MlpDp(Mlp):
 
     def backward(self, out_grad):
         """
-        dWout[F, D]{Ux} = A.T[F, Bx] @x dOut[Bx, D]
+        dWout[F, D]{Ux} = A.T[F, Bx] @ dOut[Bx, D]
         dWout[F, D] = AllReduce_x(dWout[F, D]{Ux})
         
         dA[Bx, F] = dOut[Bx, D] @ Wout.T[D, F]
         dZ[Bx, F] = dA[Bx, F] * Act'(Z)[Bx, F]
-        dWin[D, F]{Ux} = X.T[D, Bx] @x dZ[Bx, F]
+        dWin[D, F]{Ux} = X.T[D, Bx] @ dZ[Bx, F]
         dWin[D, F] = AllReduce_x(dWin[D, F]{Ux})
 
         dX[Bx, F] = dZ[Bx, F] @ Win.T[F, D]
@@ -50,11 +64,11 @@ class MlpDp(Mlp):
 def worker_fn(rank, world_size):
     os.environ['MASTER_ADDR'] = '127.0.0.1'
     os.environ['MASTER_PORT'] = '29500'
-    B, D, F = 8, 64, 256
 
     device_type = "cpu"
     device = f"{device_type}:{rank}"
     dist.init_process_group("gloo", rank=rank, world_size=world_size)
+    B, D, F = 8, 64, 256
 
     # Model Init
     torch.manual_seed(42)
@@ -62,21 +76,23 @@ def worker_fn(rank, world_size):
         'layer_in/weights': torch.randn(D, F, dtype=torch.float32),
         'layer_out/weights': torch.randn(F, D, dtype=torch.float32),
     }
-    model = MlpDp()
-    model.load_checkpoint(params, device=device)
+    model = MlpDp(rank, D, F, device)
+    model.load_checkpoint(params)
 
     # Data Sharding
     B_local = B // world_size
     start = rank * B_local
     end = start + B_local
 
-    x = torch.randn(B, D, dtype=torch.bfloat16)
-    x_local = x[start:end, :].detach().clone().to(device)
+    x = torch.randn(B, D, dtype=torch.bfloat16) # global unsharded input
+    x_local = torch.zeros((B_local, D), dtype=torch.bfloat16, device=device)
+    x_local[...] = x[start:end, :]
     out_local = model.forward(x_local)
 
     # simulated loss gradient (dLoss/dOut)
-    grad_out = torch.randn(B, D, dtype=torch.bfloat16)
-    grad_out_local = grad_out[start:end, :].detach().clone().to(device)
+    grad_out = torch.randn(B, D, dtype=torch.bfloat16) # global unsharded gradients
+    grad_out_local = torch.zeros((B_local, D), dtype=torch.bfloat16, device=device)
+    grad_out_local[...] = grad_out[start:end, :]
     grads = model.backward(grad_out_local)
 
     # Verification

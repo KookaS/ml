@@ -8,27 +8,30 @@ from tutorial.torch.mlp import Mlp
 
 class MlpTp(Mlp):
 
-    def __init__(self, rank, d_model, d_ff):
-        super().__init__()
+    def __init__(self, rank, d_model, d_ff, device):
+        self.activations = []
         self.rank = rank
         self.d_model = d_model
         self.d_ff = d_ff
+        # init the weights for the optimizer
+        self.w_in = torch.zeros((d_model, d_ff // dist.get_world_size()), dtype=torch.float32, device=device)
+        self.w_out = torch.zeros((d_ff // dist.get_world_size(), d_model), dtype=torch.float32, device=device)
 
-    def load_checkpoint(self, params, device):
+    def load_checkpoint(self, params):
         """
         X[B, D] @ Win[D, Fy] @y Wout[Fy, D]
         """
         local_d_ff = self.d_ff // dist.get_world_size()
         start = local_d_ff * self.rank
         end = start + local_d_ff
-        self.w_in = params['layer_in/weights'][:, start:end].detach().clone().to(device)
-        self.w_out = params['layer_out/weights'][start:end, :].detach().clone().to(device)
+        self.w_in[...] = params['layer_in/weights'][:, start:end]
+        self.w_out[...] = params['layer_out/weights'][start:end, :]
     
     def forward(self, x):
         """
         Z[B, Fy] = X[B, D] @ Win[D, Fy]
         A[B, Fy] = Activation (Z)
-        Out[B, D]{Uy} = A[B, Fy] @y Wout[Fy, D]
+        Out[B, D]{Uy} = A[B, Fy] @ Wout[Fy, D]
         Out[B, D] = AllReduce(Out[B, D]{Uy})
         """
         self.activations = []
@@ -57,8 +60,6 @@ class MlpTp(Mlp):
         return grads
 
 
-B, D, F = 8, 64, 256
-
 # --- The Runner ---
 def worker_fn(rank, world_size):
     os.environ['MASTER_ADDR'] = '127.0.0.1'
@@ -67,6 +68,7 @@ def worker_fn(rank, world_size):
     device_type = "cpu"
     device = f"{device_type}:{rank}"
     dist.init_process_group("gloo", rank=rank, world_size=world_size)
+    B, D, F = 8, 64, 256
 
     # Model Init
     torch.manual_seed(42)
@@ -74,8 +76,8 @@ def worker_fn(rank, world_size):
         'layer_in/weights': torch.randn(D, F, dtype=torch.float32),
         'layer_out/weights': torch.randn(F, D, dtype=torch.float32),
     }
-    model = MlpTp(rank, D, F)
-    model.load_checkpoint(params, device=device)
+    model = MlpTp(rank, D, F, device)
+    model.load_checkpoint(params)
 
     x = torch.randn(B, D, dtype=torch.bfloat16, device=device)
     out = model.forward(x)
@@ -83,7 +85,6 @@ def worker_fn(rank, world_size):
     # simulated loss gradient (dLoss/dOut)
     grad_out = torch.randn(B, D, dtype=torch.bfloat16, device=device)
     grads = model.backward(grad_out)
-    # For weight updates we return sharded gradients
 
     # Verification
     if rank == 0:
