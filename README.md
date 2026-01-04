@@ -8,7 +8,12 @@ uv run python -m tutorial.torch.sharding.mlp_dp
 
 #### Tutorial Torch
 
-[Torch distributed API](https://docs.pytorch.org/docs/stable/distributed.html)
+1. [Torch distributed API](https://docs.pytorch.org/docs/stable/distributed.html)
+2. Sharding strategies under `tutorial\torch\sharding`
+
+#### Notes Torch
+
+- don't use the old primitives, instead use in-place ones like `dist.all_gather_into_tensor` and `dist.all_reduce_tensor` that aggregate along the primary dimension.
 
 ## JAX
 
