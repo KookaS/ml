@@ -9,7 +9,7 @@ uv run python -m tutorial.torch.sharding.mlp_dp
 #### Tutorial Torch
 
 1. [Torch distributed API](https://docs.pytorch.org/docs/stable/distributed.html)
-2. Sharding strategies under `tutorial\torch\sharding`
+2. [Sharding strategies](tutorial/torch/sharding)
 
 #### Notes Torch
 
@@ -24,6 +24,6 @@ uv run python -m tutorial.jax.sharding.mlp_dp
 #### Tutorial JAX
 
 
-1. [JIT compilation](tutorial\jax\jit.py)
-2. [Sharding](tutorial\jax\sharding.py)
-3. Sharding strategies under `tutorial\jax\sharding`
+1. [JIT compilation](tutorial/jax/jit.py)
+2. [Sharding](tutorial/jax/sharding.py)
+3. [Sharding strategies](tutorial/jax/sharding)
