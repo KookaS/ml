@@ -14,15 +14,15 @@ class MlpTp(Mlp):
         self.d_model = d_model
         self.d_ff = d_ff
 
-    def load_checkpoint(self, params):
+    def load_checkpoint(self, params, device):
         """
         X[B, D] @ Win[D, Fy] @y Wout[Fy, D]
         """
         local_d_ff = self.d_ff // dist.get_world_size()
         start = local_d_ff * self.rank
         end = start + local_d_ff
-        self.w_in = params['layer_in/weights'][:, start:end].detach().clone().to(f"cpu:{self.rank}")
-        self.w_out = params['layer_out/weights'][start:end, :].detach().clone().to(f"cpu:{self.rank}")
+        self.w_in = params['layer_in/weights'][:, start:end].detach().clone().to(device)
+        self.w_out = params['layer_out/weights'][start:end, :].detach().clone().to(device)
     
     def forward(self, x):
         """
@@ -31,8 +31,9 @@ class MlpTp(Mlp):
         Out[B, D]{Uy} = A[B, Fy] @y Wout[Fy, D]
         Out[B, D] = AllReduce(Out[B, D]{Uy})
         """
-        
-        out = super().forward(x)
+        self.activations = []
+        out = super().forward(x) # bf16
+        out = out.contiguous()
         dist.all_reduce(out, op=dist.ReduceOp.SUM)
         return out
 
@@ -49,8 +50,8 @@ class MlpTp(Mlp):
         """
         grads = super().backward(out_grad)
 
-        x_grad = grads['input']
-        dist.all_reduce(x_grad, op=dist.ReduceOp.AVG)
+        x_grad = grads['input'].contiguous() # bf16
+        dist.all_reduce(x_grad, op=dist.ReduceOp.SUM) # chain rule, summing partial parts of the model
         grads['input'] = x_grad
 
         return grads
@@ -62,39 +63,39 @@ B, D, F = 8, 64, 256
 def worker_fn(rank, world_size):
     os.environ['MASTER_ADDR'] = '127.0.0.1'
     os.environ['MASTER_PORT'] = '29500'
+
+    device_type = "cpu"
+    device = f"{device_type}:{rank}"
     dist.init_process_group("gloo", rank=rank, world_size=world_size)
 
     # Model Init
     torch.manual_seed(42)
     params = {
-        'layer_in/weights': torch.randn(D, F, dtype=torch.float32, device=f"cpu:{rank}"),
-        'layer_out/weights': torch.randn(F, D, dtype=torch.float32, device=f"cpu:{rank}"),
+        'layer_in/weights': torch.randn(D, F, dtype=torch.float32),
+        'layer_out/weights': torch.randn(F, D, dtype=torch.float32),
     }
     model = MlpTp(rank, D, F)
-    model.load_checkpoint(params)
+    model.load_checkpoint(params, device=device)
 
-    x = torch.randn(B, D, dtype=torch.float32, device=f"cpu:{rank}")
+    x = torch.randn(B, D, dtype=torch.bfloat16, device=device)
     out = model.forward(x)
 
     # simulated loss gradient (dLoss/dOut)
-    grad_out = torch.randn(B, D, dtype=torch.float32, device=f"cpu:{rank}")
+    grad_out = torch.randn(B, D, dtype=torch.bfloat16, device=device)
     grads = model.backward(grad_out)
     # For weight updates we return sharded gradients
 
     # Verification
     if rank == 0:
-        print(f"Rank {rank}: Manual Backward Complete.")
-        print(f"Gradient W_in shape: {grads['layer_in/weights'].shape}")
-        print(f"Gradient W_out shape: {grads['layer_out/weights'].shape}")
-        print(f"Gradient X shape: {grads['input'].shape}")
-        # It should work without hanging
+        print(f"--- Simulation on {device_type.upper()} ---")
+        print(f"Rank {rank}: TP Backward Complete.")
+        # Check Shapes
+        print(f"Grad Win: {grads['layer_in/weights'].shape} (Expected: {D}, {F//world_size})")
+        print(f"Grad Wout: {grads['layer_out/weights'].shape} (Expected: {F//world_size}, {D})")
+        print(f"Grad X:   {grads['input'].shape} (Expected: {B}, {D})")
 
     dist.destroy_process_group()
 
 if __name__ == "__main__":
     WORLD_SIZE = 4
     mp.spawn(worker_fn, args=(WORLD_SIZE,), nprocs=WORLD_SIZE, join=True)
-
-    
-
-    

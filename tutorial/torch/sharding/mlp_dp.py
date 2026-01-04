@@ -14,6 +14,7 @@ class MlpDp(Mlp):
         A[Bx, F] = Activation (Z)
         Out [Bx, D] = A[Bx, F] @ Wout[F, D]
         """
+        self.activations = []
         return super().forward(x)
 
     def backward(self, out_grad):
@@ -30,12 +31,14 @@ class MlpDp(Mlp):
         """
         grads = super().backward(out_grad)
 
-        w_out_grad = grads['layer_in/weights']
-        w_in_grad = grads['layer_out/weights']
+        w_in_grad = grads['layer_in/weights']
+        w_out_grad = grads['layer_out/weights']
 
-        # average the gradients over all the batch
+        # average the gradients over all the batches
         # each device has a chunk of dimension [F,D]
         # but only holds parts of the end result
+        w_out_grad = w_out_grad.contiguous()
+        w_in_grad = w_in_grad.contiguous()
         dist.all_reduce(w_out_grad, op=dist.ReduceOp.AVG)
         dist.all_reduce(w_in_grad, op=dist.ReduceOp.AVG)
         grads['layer_in/weights'] = w_in_grad
@@ -43,13 +46,14 @@ class MlpDp(Mlp):
 
         return grads
 
-
-B, D, F = 8, 64, 256
-
 # --- The Runner ---
 def worker_fn(rank, world_size):
     os.environ['MASTER_ADDR'] = '127.0.0.1'
     os.environ['MASTER_PORT'] = '29500'
+    B, D, F = 8, 64, 256
+
+    device_type = "cpu"
+    device = f"{device_type}:{rank}"
     dist.init_process_group("gloo", rank=rank, world_size=world_size)
 
     # Model Init
@@ -59,36 +63,33 @@ def worker_fn(rank, world_size):
         'layer_out/weights': torch.randn(F, D, dtype=torch.float32),
     }
     model = MlpDp()
-    model.load_checkpoint(params)
+    model.load_checkpoint(params, device=device)
 
     # Data Sharding
     B_local = B // world_size
     start = rank * B_local
     end = start + B_local
 
-    x = torch.randn(B, D, dtype=torch.float32)
-    x_local = x[start:end, :].detach().clone().to(f"cpu:{rank}")
+    x = torch.randn(B, D, dtype=torch.bfloat16)
+    x_local = x[start:end, :].detach().clone().to(device)
     out_local = model.forward(x_local)
 
     # simulated loss gradient (dLoss/dOut)
-    grad_out = torch.randn(B, D, dtype=torch.float32)
-    grad_out_local = grad_out[start:end, :].detach().clone().to(f"cpu:{rank}")
+    grad_out = torch.randn(B, D, dtype=torch.bfloat16)
+    grad_out_local = grad_out[start:end, :].detach().clone().to(device)
     grads = model.backward(grad_out_local)
 
     # Verification
     if rank == 0:
-        print(f"Rank {rank}: Manual Backward Complete.")
-        print(f"Gradient W_in shape: {grads['layer_in/weights'].shape}")
-        print(f"Gradient W_out shape: {grads['layer_out/weights'].shape}")
-        print(f"Gradient X shape: {grads['input'].shape}")
-        # It should work without hanging
+        print(f"--- Simulation on {device_type.upper()} ---")
+        print(f"Rank {rank}: TP Backward Complete.")
+        # Check Shapes
+        print(f"Grad Win: {grads['layer_in/weights'].shape} (Expected: {D}, {F})")
+        print(f"Grad Wout: {grads['layer_out/weights'].shape} (Expected: {F}, {D})")
+        print(f"Grad X:   {grads['input'].shape} (Expected: {B_local}, {D})")
 
     dist.destroy_process_group()
 
 if __name__ == "__main__":
     WORLD_SIZE = 4
     mp.spawn(worker_fn, args=(WORLD_SIZE,), nprocs=WORLD_SIZE, join=True)
-
-    
-
-    
