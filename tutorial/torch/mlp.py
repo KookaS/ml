@@ -3,7 +3,7 @@ from torch import einsum
 
 class Mlp:
 
-    def __init__(self, d_model, d_ff, device):
+    def __init__(self, d_model, d_ff):
         self.activations = []
         # init the weights for the optimizer
         self.w_in = torch.zeros((d_model, d_ff), dtype=torch.float32)
@@ -77,7 +77,7 @@ if __name__ == "__main__":
     # loss = (out - target).pow(2).mean()
     # print(f"Loss: {loss.item()}")
     # grad_out = 2 * (out - target) / B
-    
+
     # simulated loss gradient (dLoss/dOut)
     grad_out = torch.randn(B, D, dtype=torch.bfloat16)
     grads = model.backward(grad_out)
