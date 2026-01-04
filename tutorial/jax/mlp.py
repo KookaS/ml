@@ -13,25 +13,7 @@ class Mlp:
     Basic MLP
     """
     
-    def __init__(self):
-        self.params: dict[str, jax.Array] = {}
-
-    def load_checkpoint(self, params: dict[str, jax.Array]) -> None:
-        """
-        Load and shard parameters.
-        
-        Args:
-            params: Dict with 'layer_in/weights' [D, F] and layer_out/weights [F, D]
-        """
-        self.params = {
-            'layer_in/weights': params['layer_in/weights'],
-            'layer_out/weights': params['layer_out/weights'],
-        }
-    
-    # static_argnames=('self',) is used only for simplicity, for training params are not static
-    # use Flax or Equinox
-    @partial(jax.jit, static_argnames=('self',))
-    def forward(self, x: jax.Array) -> Tuple[jax.Array, jax.Array]:
+    def forward(self, w_in, w_out, x: jax.Array) -> Tuple[jax.Array, jax.Array]:
         """Forward pass for MLP.
         
         1. H[B, F] = X[B, D] @ Win[D, F]
@@ -41,14 +23,13 @@ class Mlp:
         """
         activations = []
         activations.append(x)
-        h = jnp.einsum('bd,df->bf', x, self.params['layer_in/weights'])
+        h = jnp.einsum('bd,df->bf', x, w_in)
         a = relu(h)
         activations.append(a)
-        out = jnp.einsum('bf,fd->bd', a, self.params['layer_out/weights'])
+        out = jnp.einsum('bf,fd->bd', a, w_out)
         return out, activations
 
-    @partial(jax.jit, static_argnames=('self',))
-    def backward(self, out_grad, activations: jax.Array) -> dict[str, jax.Array]:
+    def backward(self, w_out, out_grad, activations: jax.Array) -> dict[str, jax.Array]:
         """Backward pass for MLP.
         
         1. get dOut[B, D]
@@ -62,7 +43,7 @@ class Mlp:
         a = activations.pop()
         w_out_grad = jnp.einsum('bf,bd->fd', a, out_grad)
 
-        a_grad = jnp.einsum('bd,fd->bf', out_grad, self.params['layer_out/weights'])
+        a_grad = jnp.einsum('bd,fd->bf', out_grad, w_out)
         h_grad = a_grad * (a > 0)
         x = activations.pop()
         w_in_grad = jnp.einsum('bd,bf->df', x, h_grad)

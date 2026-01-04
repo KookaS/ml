@@ -31,19 +31,17 @@ if __name__ == "__main__":
     """
     x = jnp.ones((B,D), dtype=jnp.bfloat16, device=NamedSharding(mesh, P(None, 'Y')))
     inspect_array(x, "X -- Input")
-    model.load_checkpoint({
-        'layer_in/weights': jnp.ones((D, F), dtype=jnp.float32, device=NamedSharding(mesh, P(None, 'Y'))),
-        'layer_out/weights': jnp.ones((F, D), dtype=jnp.float32, device=NamedSharding(mesh, P('Y', None))),
-    })
+    w_in = jnp.ones((D, F), dtype=jnp.float32, device=NamedSharding(mesh, P(None, 'Y')))
+    w_out = jnp.ones((F, D), dtype=jnp.float32, device=NamedSharding(mesh, P('Y', None)))
     
-    out, activations = model.forward(x)
+    out, activations = model.forward(w_in, w_out, x)
     inspect_array(out, "Out")
 
     # simulated loss gradient (dLoss/dOut)
     grad_out = jnp.ones((B,D), dtype=jnp.bfloat16, device=NamedSharding(mesh, P(None, 'Y')))
-    grads = model.backward(grad_out, activations)
+    grads = model.backward(w_out, grad_out, activations.copy())
     inspect_array(grads['layer_out/weights'], "dWout")
     inspect_array(grads['layer_in/weights'], "dWin")
 
-    benchmark("Forward", model.forward, x)
-    benchmark("Backward", model.backward, grad_out, activations)
+    benchmark("Forward", model.forward, w_in, w_out, x)
+    benchmark("Backward", model.backward, w_out, grad_out, activations)
