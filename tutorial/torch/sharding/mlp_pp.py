@@ -104,31 +104,28 @@ def worker_fn(rank, world_size):
     grad_out = torch.randn(B, D, dtype=torch.bfloat16, device=device)
     grads = model.backward(grad_out) # None or Tensor if first
 
-    # Verification
-    print(f"--- Simulation on {device_type.upper()} Rank {rank} ---")
-    
-    # Check Logic: Each rank holds different parts of the result
-    if rank == 1:
-        # Rank 1 computed the loss/output
-        if out is not None:
-             print(f"Rank {rank}: Output Shape {out.shape} (Expected: {B, D})")
-
-    # Check Gradients (Safe for partial dicts)
-    # 1. Check for Input Gradient (Rank 0 only)
-    if 'input' in grads:
-        print(f"Rank {rank} Grad X:      {grads['input'].shape} (Expected: {B, D})")
-
-    # 2. Check for Weights (Dynamic Key Check)
-    # We loop through the returned keys to see what we got
-    for key, val in grads.items():
-        if 'weights' in key:
-            # layer_0 should be [D, F], layer_1 should be [F, D]
-            print(f"Rank {rank} Grad {key}: {val.shape}")
-
-    print("-" * 30)
+    # Verification - print sequentially by rank
+    for printing_rank in range(world_size):
+        if rank == printing_rank:
+            print(f"--- Simulation on {device_type.upper()} Rank {rank} ---")
+            
+            if rank == 1:
+                if out is not None:
+                    print(f"  Output Shape {out.shape} (Expected: {B, D})")
+            
+            if 'input' in grads:
+                print(f"  Grad X: {grads['input'].shape} (Expected: {B, D})")
+            
+            for key, val in grads.items():
+                if 'weights' in key:
+                    print(f"  Grad {key}: {val.shape}")
+            
+            print("-" * 30)
+        
+        dist.barrier()  # Wait for each rank to finish printing
 
     dist.destroy_process_group()
 
 if __name__ == "__main__":
     WORLD_SIZE = 2
-    mp.spawn(worker_fn, args=(WORLD_SIZE,), nprocs=WORLD_SIZE, join=True)
+    mp.start_processes(worker_fn, args=(WORLD_SIZE,), nprocs=WORLD_SIZE, join=True, start_method="fork")
