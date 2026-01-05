@@ -62,7 +62,6 @@ if __name__ == "__main__":
 
     torch.manual_seed(42)
     x = torch.randn(B, D, dtype=torch.bfloat16)
-    y = torch.randn(B, D, dtype=torch.bfloat16)
     params = {
         'layer_in/weights': torch.randn(D, F, dtype=torch.float32),
         'layer_out/weights': torch.randn(F, D, dtype=torch.float32),
