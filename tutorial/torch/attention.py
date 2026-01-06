@@ -46,15 +46,17 @@ class Attention:
         k = einsum('btd,dnh->btnh', x, self.wk)
         v = einsum('btd,dnh->btnh', x, self.wv)
 
+        # SCALING
         qk = einsum('bsnh,btnh->bsnt', q, k) # contract over head dimensions
         qk /= q.shape[-1]**0.5
 
-        # masking
+        # MASKING (decoder only)
         seq = q.shape[1] # B S N T
         mask = torch.arange(seq)[:, None] >= torch.arange(seq)[None, :] 
         mask = torch.where(mask, 0.0, -torch.inf)
         qk += mask[None, :, None, :] # B S N T
 
+        # ATTENTION SCORE
         # for every query, we distribute 100% of its attention capacity across the available keys
         scores = torch.softmax(qk, dim=-1) # the -inf will turn to 0 with softmax
 
@@ -62,11 +64,10 @@ class Attention:
         
         attention = einsum('bsnh,dnh->bsd', qkv, self.wo)
 
-        # residual connection, for vanishing gradient problem
+        # RESIDUAL CONNECTION (for vanishing gradient problem)
         x += attention
 
-        # layer norm (post-norm)
-        # modern LLMs use (pre-norm)
+        # LAYER NORM (post-norm), modern LLMs use (pre-norm)
         x = torch.nn.functional.rms_norm(x, (x.shape[-1],))
 
         return x

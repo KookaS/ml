@@ -1,5 +1,9 @@
 # ml
 
+## NumPy
+
+Numpy basics can be found under [there](tutorial/numpy)
+
 ## Torch
 
 ```bash
