@@ -15,6 +15,8 @@
 ## NumPy Tutorial
 
 - [Masking NumPy](tutorial/numpy/masking.py)
+- [Softmax](tutorial/numpy/softmax.py)
+- [Normalization](tutorial/numpy/normalization.py)
 
 ## JAX Tutorial
 
