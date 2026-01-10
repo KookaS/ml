@@ -1,33 +1,28 @@
-# ml
+# Machine Learning
 
-## NumPy
+## Positional Encoder
+- Positional Encoder Sinusoidal in [NumPy](tutorial/numpy/positional_encoding_sinusoidal.py)
+- RoPE in [NumPy](tutorial/numpy/positional_encoding_rope.py)
+- RoPE GPT-NeoX in [NumPy](tutorial/numpy/positional_encoding_rope_neox.py)
 
-Numpy basics can be found under [there](tutorial/numpy)
+## Sharding strategies
 
-## Torch
+- MLP Data Parallelism(DP) in [PyTorch](tutorial/torch/sharding/mlp_dp.py), in [JAX](tutorial/jax/sharding/mlp_dp.py)
+- MLP Tensor Parallelism(TP) in [PyTorch](tutorial/torch/sharding/mlp_tp.py), in [JAX](tutorial/jax/sharding/mlp_tp.py)
+- MLP Fully Sharded Data Parallelism(FSDP) in [PyTorch](tutorial/torch/sharding/mlp_fsdp.py), in [JAX](tutorial/jax/sharding/mlp_fsdp.py)
+- MLP Pipelining in [PyTorch](tutorial/torch/sharding/mlp_pp.py)
 
-```bash
-uv run python -m tutorial.torch.sharding.mlp_dp
-```
+## NumPy Tutorial
 
-#### Tutorial Torch
+- [Masking NumPy](tutorial/numpy/masking.py)
 
-1. [Torch distributed API](https://docs.pytorch.org/docs/stable/distributed.html)
-2. [Sharding strategies](tutorial/torch/sharding)
+## JAX Tutorial
 
-#### Notes Torch
+- [JIT](tutorial/jax/jit.py)
+- [Condition](tutorial/jax/condition.py)
+- [Shading and Mesh](tutorial/jax/sharding.py)
 
+## Notes Torch
+
+- [Torch distributed API](https://docs.pytorch.org/docs/stable/distributed.html)
 - don't use the old primitives, instead use in-place ones like `dist.all_gather_into_tensor` and `dist.all_reduce_tensor` that aggregate along the primary dimension.
-
-## JAX
-
-```bash
-uv run python -m tutorial.jax.sharding.mlp_dp
-```
-
-#### Tutorial JAX
-
-
-1. [JIT compilation](tutorial/jax/jit.py)
-2. [Sharding](tutorial/jax/sharding.py)
-3. [Sharding strategies](tutorial/jax/sharding)
