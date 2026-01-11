@@ -1,5 +1,9 @@
 # Machine Learning
 
+## Core
+
+- Softmax in [PyTorch](tutorial/torch/softmax.py) and in [NumPy](tutorial/numpy/softmax.py)
+
 ## Positional Encoder
 - Positional Encoder Sinusoidal in [NumPy](tutorial/numpy/positional_encoding_sinusoidal.py)
 - RoPE in [NumPy](tutorial/numpy/positional_encoding_rope.py)
@@ -15,7 +19,6 @@
 ## NumPy Tutorial
 
 - [Masking NumPy](tutorial/numpy/masking.py)
-- [Softmax](tutorial/numpy/softmax.py)
 - [Normalization](tutorial/numpy/normalization.py)
 
 ## JAX Tutorial
@@ -26,5 +29,6 @@
 
 ## Notes Torch
 
-- [Torch distributed API](https://docs.pytorch.org/docs/stable/distributed.html)
+- [Torch distributed API](https://docs.pytorch.org/docs/stable/distributed.html).
 - don't use the old primitives, instead use in-place ones like `dist.all_gather_into_tensor` and `dist.all_reduce_tensor` that aggregate along the primary dimension.
+- custom class for training requires `torch.autograd.Function`, `@staticmethod` and [`ctx.save_for_backward`](https://docs.pytorch.org/docs/stable/generated/torch.autograd.function.FunctionCtx.save_for_backward.html)
