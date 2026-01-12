@@ -3,7 +3,6 @@ import torch
 from tutorial.torch.attention import Attention
 from tutorial.torch.mlp import Mlp
 from tutorial.torch.normalization_rms import NormRms
-from tutorial.torch.residual import Residual
 
 class Transformer(torch.nn.Module):
 
