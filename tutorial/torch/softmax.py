@@ -130,7 +130,7 @@ class Softmax(torch.nn.Module):
 
 if __name__ == "__main__":
 
-    # Create random input [Batch, Seq, Num, Hidden]
+    # Create random input [Batch, Seq, Num, Head]
     B, S, N, H = 2, 5, 4, 8
     x = torch.randn(B, S, N, H, requires_grad=True)
 
