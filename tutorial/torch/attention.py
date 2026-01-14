@@ -14,7 +14,7 @@ class AttentionFn(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, x, wq, wk, wv, wo, masking):
+    def forward(ctx, x, wq, wk, wv, wo):
         """
         Q[B, S, N, H] = X[B, S, D] @ Wq[D, N, H]
         K[B, T, N, H] = X[B, T, D] @ Wk[D, N, H]
@@ -27,7 +27,6 @@ class AttentionFn(torch.autograd.Function):
 
         att[B, S, D] = qkv[B, S, N, H] @ Wo[B, D, N, H]
         """
-        ctx.masking = masking
 
         q = torch.einsum('bsd,dnh->bsnh', x, wq)
         k = torch.einsum('btd,dnh->btnh', x, wk)
@@ -37,14 +36,13 @@ class AttentionFn(torch.autograd.Function):
         qk = torch.einsum('bsnh,btnh->bsnt', q, k) # contract over head dimensions
         qk /= q.shape[-1]**0.5
 
-        # MASKING (decoder only), in production you should never use if/else with GPUs
-        if masking:
-            seq = q.shape[1] # B S N T
-            mask = torch.arange(seq)[:, None] >= torch.arange(seq)[None, :] 
-            mask = torch.where(mask, 0.0, -torch.inf)
-            qk += mask[None, :, None, :] # B S N T
-            # mask = torch.tril(torch.ones(S, T)) == 0
-            # qk = qk.masked_fill(mask, float('-inf'))
+        # MASKING for training only (decoder only)
+        seq = qk.shape[1]
+        mask = torch.arange(seq)[:, None] >= torch.arange(seq)[None, :] 
+        mask = torch.where(mask, 0.0, -torch.inf)
+        qk += mask[None, :, None, :] # B S N T
+        # mask = torch.tril(torch.ones(S, T)) == 0
+        # qk = qk.masked_fill(mask, float('-inf'))
 
         # ATTENTION SCORE
         # for every query, we distribute 100% of its attention capacity across the available keys
@@ -138,13 +136,12 @@ class AttentionFn(torch.autograd.Function):
         d_xv = torch.einsum('dnh,btnh->btd', wv, d_v)
         d_x = d_xq + d_xk + d_xv
 
-        # forward was given x, wq, wk, wv, wo, masking
-        return d_x, d_wq, d_wk, d_wv, d_wo, None
+        # forward was given x, wq, wk, wv, wo
+        return d_x, d_wq, d_wk, d_wv, d_wo
     
 class Attention(torch.nn.Module):
-    def __init__(self, d_model, n_heads, head_dim, masking=True):
+    def __init__(self, d_model, n_heads, head_dim):
         super().__init__()
-        self.masking=masking
 
         # init the weights for the optimizer
         self.wq = torch.nn.Parameter(torch.empty(d_model, n_heads, head_dim))
@@ -168,7 +165,7 @@ class Attention(torch.nn.Module):
         
     def forward(self, x):
         # We pass our weights into the static function
-        return AttentionFn.apply(x, self.wq, self.wk, self.wv, self.wo, self.masking)
+        return AttentionFn.apply(x, self.wq, self.wk, self.wv, self.wo)
 
 
 if __name__ == "__main__":
