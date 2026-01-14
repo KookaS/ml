@@ -6,20 +6,20 @@ Here are the modern implementations of LLM architecture, sharding strategies and
 
 - Softmax in [PyTorch with autograd](tutorial/torch/softmax.py) and in [NumPy](tutorial/numpy/softmax.py)
 - Linear projection in [PyTorch with autograd](tutorial/torch/linear.py)
+- Multi Layer Perceptron in [PyTorch with autograd](tutorial/torch/mlp.py)
 
-## Positional Encoder
+## Transformer Architecture
+
+- Disaggregated Serving with KV Cache in [PyTorch](tutorial/torch/attention.py)
+- Multihead Attention in [PyTorch with autograd](tutorial/torch/attention.py)
+- Norm RMS in [PyTorch with autograd](tutorial/torch/normalization_rms.py) and in [NumPy](tutorial/numpy/normalization_rms.py)
+- Transformer in [PyTorch with autograd](tutorial/torch/transformer.py)
+
+#### Positional Encoder
 
 - Positional Encoder Sinusoidal in [NumPy](tutorial/numpy/positional_encoding_sinusoidal.py)
 - RoPE in [NumPy](tutorial/numpy/positional_encoding_rope.py)
 - RoPE GPT-NeoX in [NumPy](tutorial/numpy/positional_encoding_rope_neox.py)
-
-## Transformer Architecture
-
-- Disaggregated Serving with KV Cache in [Pytorch](tutorial/torch/attention.py)
-- Multihead Attention in [PyTorch with autograd](tutorial/torch/attention.py)
-- Multi Layer Perceptron in [PyTorch with autograd](tutorial/torch/mlp.py)
-- Norm RMS in [PyTorch with autograd](tutorial/torch/normalization_rms.py) and in [NumPy](tutorial/numpy/normalization_rms.py)
-- Transformer in [PyTorch with autograd](tutorial/torch/transformer.py)
 
 ## Sharding strategies
 

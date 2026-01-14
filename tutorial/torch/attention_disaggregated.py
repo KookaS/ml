@@ -27,11 +27,14 @@ class KVCache:
         B, S, N, H = k.shape
 
         if B != self.batch_size:
-            raise ValueError(f"key and value should have a batch size of {self.batch_size}")
+            raise ValueError(f"Batch size mismatch: {B} vs {self.batch_size}")
         
-        self.k_cache[:, :S, :, :] = k
-        self.v_cache[:, :S, :, :] = v
-        self.pointer = S + 1
+        if S > self.max_sequence_length:
+             raise IndexError("Prompt is longer than cache capacity")
+        
+        self.k_cache[:, :S] = k
+        self.v_cache[:, :S] = v
+        self.pointer = S
     
     def decode(self, k_new, v_new):
         """
@@ -44,25 +47,34 @@ class KVCache:
         if self.pointer >= self.max_sequence_length:
             raise IndexError("KV Cache is full")
         
-        self.k_cache[:, self.pointer, :, :] = k_new.squeeze(1)
-        self.v_cache[:, self.pointer, :, :] = v_new.squeeze(1)
+        # k_new is [B, 1, N, H] -> assign to [B, 1, N, H] slice
+        self.k_cache[:, self.pointer:self.pointer+1] = k_new
+        self.v_cache[:, self.pointer:self.pointer+1] = v_new
         self.pointer += 1
 
-    def get(self, batch_size: int = None):
+    def get(self):
         """
         Get the KVCache.
         """
-        view_batch_size = batch_size or self.batch_size
         return (
-            self.k_cache[:view_batch_size, :self.pointer, :, :],
-            self.v_cache[:view_batch_size, :self.pointer, :, :],
+            self.k_cache[:, :self.pointer, :, :],
+            self.v_cache[:, :self.pointer, :, :],
         )
     
     @staticmethod
     def fuse(*caches: "KVCache"):
         """
         Fuse the KVCache together of the same sequence length.
+
+        Limitations:
+            - only supports caches of batch size of 1
+            - no padding is performed for sequences of different lengths
+
+        Shape: list of [1, S, N, H] --> [B, S, N, H]
         """
+        if not caches:
+            raise ValueError("No caches to fuse")
+
         # [B, S, N, H]
         batch_size = len(caches)
         max_sequence_length = caches[0].max_sequence_length
@@ -70,13 +82,13 @@ class KVCache:
         head_dim = caches[0].head_dim
         kv_cache_fused = KVCache(batch_size, max_sequence_length, num_heads, head_dim)
 
-        for i, cache in enumerate(caches):
-            k, v = cache.get() # [1, S, N, H]
-            if k.shape[0] != 1:
-                raise ValueError("Key and Value should have batch size of 1")
-            sequence_length = k.shape[1]
-            kv_cache_fused.k_cache[i, :sequence_length, :, :] = k.squeeze(0)
-            kv_cache_fused.v_cache[i, :sequence_length, :, :] = v.squeeze(0)
+        # fusion of non-contiguous memory into one big contiguous memory block
+        # paged-attention improves this
+        # only copy the tokens, not the whole memory of max_sequence_length
+        k_caches = [cache.k_cache[:, :cache.pointer] for cache in caches]
+        v_caches = [cache.v_cache[:, :cache.pointer] for cache in caches]
+        kv_cache_fused.k_cache = torch.cat(k_caches, dim=0)
+        kv_cache_fused.v_cache = torch.cat(v_caches, dim=0)
         kv_cache_fused.pointer = caches[0].pointer
         
         return kv_cache_fused
@@ -187,11 +199,11 @@ def inference_loop(x: Sequence[torch.Tensor], max_sequence_length: int, d_model:
     Dummy inference loop to mimic disaggregated serving.
 
     Schema:
-    Req1 --> Cluster_prefill_1 \
-                                \
-                                    --> Cluster_decode --> fuse --> decode
-                                /
-    Req2 --> Cluster_prefill_2 /
+    Req1 --> Cluster_prefill_1 --> prefill \
+                                            \
+                                              --> Cluster_decode --> fuse --> decode
+                                            /
+    Req2 --> Cluster_prefill_2 --> prefill /
     
     There are two types of load balancers, with two types of clusters, each with their own dimensions and sharding strategy.
 
@@ -227,16 +239,18 @@ def inference_loop(x: Sequence[torch.Tensor], max_sequence_length: int, d_model:
     # KV CACHE FUSING
     # we mimic that all prefill requests are done simultaneously
     batch_size_decode = len(requests)
-    kv_caches = []
-    x_new_batched = torch.empty(batch_size_decode, 1, D)
-    for i, (kv_cache_prefill, x_new_prefill) in enumerate(requests):
-        # aggreagete all kv_caches received together
-        kv_caches.append(kv_cache_prefill)
-        # aggregate all new tokens, [1, 1, D] -> [B, 1, D]
-        x_new_batched[i, :, :] = x_new_prefill.squeeze(0)
-    del requests
+    
+    
+    # aggreagete all kv_caches received together
+    kv_caches = [cache for cache, _ in requests]
     kv_cache_decode = KVCache.fuse(*kv_caches)
     del kv_caches
+    
+    # aggregate all new tokens, [1, 1, D] -> [B, 1, D]
+    x_new_batched = [x_new for _, x_new in requests]
+    x_new_batched = torch.concatenate(x_new_batched, dim=0)
+    del requests
+    
     print(f"[Cluster Decode 0] Fused {batch_size_decode} caches, New Batch Size: {kv_cache_decode.batch_size}, Cache Pointer: {kv_cache_decode.pointer}")
 
     # DECODE        
