@@ -1,8 +1,8 @@
 import torch
 
-from tutorial.torch.attention import Attention
-from tutorial.torch.mlp import Mlp
-from tutorial.torch.normalization_rms import NormRms
+from core.torch.attention import Attention
+from core.torch.mlp import Mlp
+from core.torch.normalization_rms import NormRms
 
 class Transformer(torch.nn.Module):
 

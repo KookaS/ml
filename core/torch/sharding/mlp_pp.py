@@ -4,7 +4,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 import os
 
-from tutorial.torch.mlp import Mlp
+from core.torch.mlp import Mlp
 
 class MlpPp(Mlp):
 

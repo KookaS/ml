@@ -1,7 +1,7 @@
 from typing import Sequence
 import torch
 
-from tutorial.torch.softmax import softmax
+from core.torch.softmax import softmax
 
 class KVCache:
     def __init__(self, batch_size, max_sequence_length, num_heads, head_dim):

@@ -1,6 +1,6 @@
 import torch
 
-from tutorial.torch.softmax import d_softmax, softmax
+from core.torch.softmax import d_softmax, softmax
 
 class AttentionFn(torch.autograd.Function):
     """
