@@ -16,10 +16,20 @@ F = 4 * D  # 32768
 bytes_per_param = 2  # bf16
 # batch_tokens for MLP is B * S
 
-def compute_mlp_intensity(batch_tokens, D, F, bytes_per_param=2):
-    """Compute arithmetic intensity for MLP: X[B,D] @ W1[D,F] @ W2[F,D]"""
-    communication = bytes_per_param * (batch_tokens*D + D*F + F*D + batch_tokens*D)
-    compute = 2 * batch_tokens * D * F + 2 * batch_tokens * F * D
+def compute_mlp_intensity(B, D, F, bytes_per_param=2):
+    """
+    Compute arithmetic intensity for MLP
+    
+    1. read X and W1, write H
+        H[B,F] = X[B,D] @ W1[D,F]
+    2. read H and W2, write Y
+        Y[B,D] = H[B,F] @ W2[F,D]
+    """
+    # the communication assumes that each result is stored on HBM
+    # As B grows, D and F becomes negligeable 
+    communication = bytes_per_param * (B*D + D*F + B*F + B*F + F*D + B*D)
+    # each matmul has factor 2 because it requires two ops per element (multiply + add)
+    compute = 2 * B*D*F + 2 * B*F*D 
     return compute / communication
 
 def roofline_perf(intensity, bandwidth, peak_flops):
