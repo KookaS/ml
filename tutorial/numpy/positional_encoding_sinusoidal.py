@@ -56,4 +56,4 @@ if __name__ == "__main__":
     plt.xlabel("Depth (Embedding Dim)")
     plt.ylabel("Position (Time)")
     # plt.show()
-    plt.savefig("tmp/positional_encoding_sinusoidal.png")
+    plt.savefig("image/embedding/positional_encoding_sinusoidal.png")

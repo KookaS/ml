@@ -109,4 +109,4 @@ if __name__ == "__main__":
     # Adjust layout to make room for colorbar
     plt.subplots_adjust(bottom=0.15)
     
-    plt.savefig("tmp/positional_encoding_rope_neox.png")
+    plt.savefig("image/embedding/positional_encoding_rope_neox.png")
