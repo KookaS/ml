@@ -17,9 +17,18 @@ Here are the modern implementations of LLM architecture, sharding strategies and
 
 #### Positional Encoder
 
-- Positional Encoder Sinusoidal in [NumPy](core/numpy/positional_encoding_sinusoidal.py), [Plot](image/embedding/positional_encoding_sinusoidal.png)
-- RoPE in [NumPy](core/numpy/positional_encoding_rope.py), [Plot](image/embedding/positional_encoding_rope.png)
-- RoPE GPT-NeoX in [NumPy](core/numpy/positional_encoding_rope_neox.py), [Plot](image/embedding/positional_encoding_rope_neox.png)
+- Positional Encoder Sinusoidal in [NumPy](core/numpy/positional_encoding_sinusoidal.py)
+- RoPE in [NumPy](core/numpy/positional_encoding_rope.py)
+- RoPE GPT-NeoX in [NumPy](core/numpy/positional_encoding_rope_neox.py)
+
+<details>
+<summary>📊 Positional Encoding Visualizations</summary>
+
+| Sinusoidal | RoPE | RoPE GPT-NeoX |
+|:---:|:---:|:---:|
+| ![Sinusoidal](image/embedding/positional_encoding_sinusoidal.png) | ![RoPE](image/embedding/positional_encoding_rope.png) | ![RoPE NeoX](image/embedding/positional_encoding_rope_neox.png) |
+
+</details>
 
 ## Sharding strategies
 
@@ -30,7 +39,19 @@ Here are the modern implementations of LLM architecture, sharding strategies and
 
 ## Scaling plots
 
-- MLP roofline [Plot](image/roofline/roofline_plot_mlp.png)
+The following are roofline analysis for different architectures. Those are non-fused operations.
+
+- MLP roofline analysis in [NumyPy](core/numpy/roofline_plot_mlp.py)
+- Multi-Head Attention roofline analysis in [NumyPy](core/numpy/roofline_plot_mha.py)
+
+<details>
+<summary>📊 Roofline Plots</summary>
+
+| MLP | Attention |
+|:---:|:---:|
+| ![MLP Roofline](image/roofline/roofline_plot_mlp.png) | ![Attention Roofline](image/roofline/roofline_plot_mha.png) |
+
+</details>
 
 ## NumPy Tutorial
 

@@ -19,18 +19,19 @@ bytes_per_param = 2  # bf16
 def compute_mlp_intensity(B, D, F, bytes_per_param=2):
     """
     Compute arithmetic intensity for MLP
-    
-    1. read X and W1, write H
-        H[B,F] = X[B,D] @ W1[D,F]
-    2. read H and W2, write Y
-        Y[B,D] = H[B,F] @ W2[F,D]
     """
     # the communication assumes that each result is stored on HBM
-    # As B grows, D and F becomes negligeable 
-    communication = bytes_per_param * (B*D + D*F + B*F + B*F + F*D + B*D)
-    # each matmul has factor 2 because it requires two ops per element (multiply + add)
-    compute = 2 * B*D*F + 2 * B*F*D 
-    return compute / communication
+    # As B grows, D and F becomes negligeable
+
+    # 1. H[B,F] = X[B,D] @ W1[D,F]
+    communication_1 = bytes_per_param * (B*D + D*F + B*F)
+    compute_1 = 2 * B*D*F
+
+    # 2. Y[B,D] = H[B,F] @ W2[F,D]
+    communication_2 =  bytes_per_param * (B*F + F*D + B*D)
+    compute_2 =  2 * B*F*D
+
+    return (compute_1 + compute_2) / (communication_1 + communication_2)
 
 def roofline_perf(intensity, bandwidth, peak_flops):
     """Achievable performance given arithmetic intensity"""
@@ -96,7 +97,7 @@ ax.annotate(f'Optimal\nB={optimal_batch:.0f}\nI={optimal_intensity:.0f}',
 # Labels and formatting
 ax.set_xlabel('Arithmetic Intensity (FLOPs/byte)', fontsize=12)
 ax.set_ylabel('Performance (FLOPs/s)', fontsize=12)
-ax.set_title(f'Roofline Model - H100 GPU (BF16)\nMLP: D={D}, F={F}', fontsize=14)
+ax.set_title(f'Roofline Model - H100 GPU (BF16)\nMLP: D={D}, F={F} (varying B)', fontsize=14)
 ax.set_xlim(0.1, 10000)
 ax.set_ylim(1e11, 2e15)
 ax.grid(True, which='both', alpha=0.3)
