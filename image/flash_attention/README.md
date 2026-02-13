@@ -158,6 +158,53 @@ Cells that exceed SRAM are hatched and show very low performance (0.00-0.03).
 - `performance_vs_block_size.png` shows Br effect at fixed Bc (assumes Bc scales with Br)
 - This heatmap shows the full 2D space when Br and Bc are chosen independently
 
+### 6. `fa1_vs_fa2.png` - Flash Attention v1 vs v2 Comparison
+Two-panel plot showing the **theoretical HBM access difference** between FA1 and FA2.
+
+**Important**: Both algorithms produce identical output. The difference is purely in memory access pattern.
+
+#### Left Panel: HBM Traffic Scaling
+- **X-axis**: Sequence Length (S)
+- **Y-axis**: HBM Bytes Transferred (GB)
+- **Red dashed**: FA1 - 2S·d + 3S²·d/Br
+- **Teal solid**: FA2 - 2S·d + 2S²·d/Br
+- **Shaded region**: FA2 savings (S²·d/Br bytes)
+
+Both formulas have the same linear term (2S·d). The difference is the coefficient on the quadratic term: 3 vs 2.
+For large S, the ratio approaches 3/2 = **1.5×**.
+
+#### Right Panel: Access Breakdown at S=4096
+Bar chart showing HBM access by type (d=64, Br=256, Tc=16):
+
+| Access Type | FA1 (MB) | FA2 (MB) | Why |
+|-------------|----------|----------|-----|
+| Q read | 8 | 0.5 | FA1: inner loop (×Tc), FA2: outer loop (×1) |
+| K read | 0.5 | 8 | FA1: outer loop (×1), FA2: inner loop (×Tr) |
+| V read | 0.5 | 8 | Same as K |
+| **O read** | **8** | **0** | **FA2 never reads O back!** |
+| O write | 8 | 0.5 | FA1: inner loop (×Tc), FA2: outer loop (×1) |
+| **Total** | **25** | **17** | **FA2 is 1.5× more efficient** |
+
+#### Algorithm Difference
+```
+FA1 (outer K,V, inner Q):        FA2 (outer Q, inner K,V):
+for j in K,V blocks:             for i in Q blocks:
+  load K_j, V_j (once)             load Q_i (once)
+  for i in Q blocks:               O_acc = 0 (in SRAM)
+    load Q_i (×Tc times!)          for j in K,V blocks:
+    load O_i (×Tc times!)            load K_j, V_j (×Tr times)
+    compute                          compute, accumulate
+    write O_i (×Tc times!)         write O_i (once!)
+```
+
+#### Key Insight
+FA2's loop order keeps O in SRAM throughout the inner loop, eliminating O read-back entirely.
+This saves S²·d/Br bytes of HBM traffic.
+
+#### Verification
+Both `flash_attention_v1_forward()` and `flash_attention_v2_forward()` are implemented in
+`core/torch/attention_flash.py` and produce identical output (verified by benchmark).
+
 ## Hardware Parameters (A100 SXM4)
 - Peak FLOPs: 312 TFLOPS (FP16)
 - HBM Bandwidth: 2039 GB/s
@@ -176,5 +223,6 @@ All plots consistently show:
 | `memory_scaling` | Bar chart shows Br=512 exceeds 164KB limit (hatched) |
 | `tile_size_vs_latency` | SRAM boundary at Br≈325, red shading for exceeded region |
 | `tile_size_heatmap` | Only 3 cells exceed SRAM → red, hatched (256×512, 512×256, 512×512) |
+| `fa1_vs_fa2` | FA2 keeps O in SRAM → eliminates O read-back (1.5× less HBM traffic) |
 
 **Optimal strategy**: Choose the largest Br that fits in SRAM (typically 128-256 for d=64).

@@ -14,15 +14,83 @@ def standard_attention_forward(x, wq, wk, wv, wo):
     o = attn @ v
     return o @ wo.t()
     
-def flash_attention_forward(x, wq, wk, wv, wo, block_size=64):
+def flash_attention_v1_forward(x, wq, wk, wv, wo, block_size=64):
     """
-    This is the implementation of the flash attention in unpadded mode, meaning batch size is untouched.
-    For sake of simplicity we only tile along the sequence dimension. This is suboptimal because we will process padding tokens to match all sequences to the same size.
-    We tile along the sequence dimension.
-    Note: this should be done as a kernel, not in pytorch usually.
+    Flash Attention v1: outer loop over K,V blocks, inner loop over Q blocks.
 
-    S sequence_length
-    d dimension of the model
+    This loop order means:
+    - K,V tiles are loaded once (in outer loop)
+    - Q tiles are loaded Tc times (once per K,V block)
+    - O is read and written Tc times (accumulate in HBM)
+
+    HBM accesses: 2*S*d + 3*S²*d/Br (K,V once + Q,O_read,O_write Tc times)
+    """
+    q = x @ wq.t()
+    k = x @ wk.t()
+    v = x @ wv.t()
+
+    S, d = q.shape
+    scale = 1 / d**(0.5)
+
+    # Global state stored in HBM (read/written each inner iteration)
+    o = torch.zeros_like(q)
+    m = torch.full((S, 1), -torch.inf, device=x.device)
+    l = torch.zeros((S, 1), device=x.device)
+
+    # Outer loop: K, V blocks (loaded once each)
+    for j in range(0, S, block_size):
+        j_end = min(j + block_size, S)
+        k_tile = k[j:j_end, :]  # [Bc, d] - loaded from HBM once
+        v_tile = v[j:j_end, :]  # [Bc, d] - loaded from HBM once
+
+        # Inner loop: Q blocks (loaded Tc times total)
+        for i in range(0, S, block_size):
+            i_end = min(i + block_size, S)
+
+            # Load from HBM (happens every iteration - this is the inefficiency!)
+            q_tile = q[i:i_end, :]           # [Br, d]
+            o_tile = o[i:i_end, :].clone()   # [Br, d] - must read previous value
+            m_i = m[i:i_end, :].clone()      # [Br, 1]
+            l_i = l[i:i_end, :].clone()      # [Br, 1]
+
+            # Compute attention block
+            S_ij = torch.einsum('rd,cd->rc', q_tile, k_tile) * scale  # [Br, Bc]
+
+            # Update block state
+            m_ij = torch.max(S_ij, axis=-1, keepdim=True).values
+            P_ij = torch.exp(S_ij - m_ij)
+            l_ij = torch.sum(P_ij, axis=-1, keepdim=True)
+
+            # Update global state with rescaling
+            m_new = torch.max(m_i, m_ij)
+            old_scale = torch.exp(m_i - m_new)
+            new_scale = torch.exp(m_ij - m_new)
+
+            l_new = (old_scale * l_i) + (new_scale * l_ij)
+            o_new = (old_scale * o_tile) + (new_scale * torch.einsum('rc,cd->rd', P_ij, v_tile))
+
+            # Write back to HBM (happens every iteration!)
+            o[i:i_end, :] = o_new
+            m[i:i_end, :] = m_new
+            l[i:i_end, :] = l_new
+
+    # Final normalization
+    o = o / l
+    return o @ wo.t()
+
+
+def flash_attention_v2_forward(x, wq, wk, wv, wo, block_size=64):
+    """
+    Flash Attention v2: outer loop over Q blocks, inner loop over K,V blocks.
+
+    This loop order means:
+    - Q tiles are loaded once (in outer loop)
+    - K,V tiles are loaded Tr times (once per Q block)
+    - O is written once (accumulate in SRAM, write at end)
+    - O is NEVER read back from HBM (key savings!)
+
+    HBM accesses: 2*S*d + 2*S²*d/Br (Q,O once + K,V Tr times)
+    Savings vs v1: S²*d/Br bytes (eliminates O read-back)
     """
 
     # compute q, k, v and store in HBM
@@ -78,7 +146,6 @@ def benchmark():
     print(f"Running on: {device.upper()}")
 
     # Configuration
-    B = 1 # Flash operates on flattened S usually, so B=1, S=Large
     S = 2048 # Sequence Length
     D = 128 # Head Dimension
     BLOCK_SIZE = 128
@@ -95,65 +162,96 @@ def benchmark():
 
     # --- Correctness Check ---
     print("Checking Correctness...")
-    out_flash = flash_attention_forward(x, wq, wk, wv, wo, block_size=BLOCK_SIZE)
     out_std = standard_attention_forward(x, wq, wk, wv, wo)
-    
-    diff = (out_flash - out_std).abs().max().item()
-    # Use relative tolerance since output magnitude depends on weight initialization
-    rel_diff = diff / (out_std.abs().max().item() + 1e-8)
-    if rel_diff > 1e-4:
-        print(f"❌ OUTPUT MISMATCH: Max Diff = {diff}, Relative = {rel_diff:.2e}")
+    out_v1 = flash_attention_v1_forward(x, wq, wk, wv, wo, block_size=BLOCK_SIZE)
+    out_v2 = flash_attention_v2_forward(x, wq, wk, wv, wo, block_size=BLOCK_SIZE)
+
+    # Check FA v1 vs Standard
+    diff_v1 = (out_v1 - out_std).abs().max().item()
+    rel_diff_v1 = diff_v1 / (out_std.abs().max().item() + 1e-8)
+    if rel_diff_v1 > 1e-4:
+        print(f"❌ FA v1 MISMATCH: Max Diff = {diff_v1}, Relative = {rel_diff_v1:.2e}")
         return
     else:
-        print(f"✅ Outputs match (Max Diff: {diff:.2e}, Relative: {rel_diff:.2e})")
+        print(f"✅ FA v1 matches Standard (Relative diff: {rel_diff_v1:.2e})")
 
-    # Backward Check
-    loss_flash = out_flash.sum()
-    loss_flash.backward()
-    grad_flash = x.grad.clone()
+    # Check FA v2 vs Standard
+    diff_v2 = (out_v2 - out_std).abs().max().item()
+    rel_diff_v2 = diff_v2 / (out_std.abs().max().item() + 1e-8)
+    if rel_diff_v2 > 1e-4:
+        print(f"❌ FA v2 MISMATCH: Max Diff = {diff_v2}, Relative = {rel_diff_v2:.2e}")
+        return
+    else:
+        print(f"✅ FA v2 matches Standard (Relative diff: {rel_diff_v2:.2e})")
+
+    # Check FA v1 vs FA v2 (should be identical)
+    diff_v1v2 = (out_v1 - out_v2).abs().max().item()
+    rel_diff_v1v2 = diff_v1v2 / (out_v2.abs().max().item() + 1e-8)
+    print(f"✅ FA v1 vs FA v2 (Relative diff: {rel_diff_v1v2:.2e})")
+
+    # Backward Check (using v2)
+    loss_v2 = out_v2.sum()
+    loss_v2.backward()
+    grad_v2 = x.grad.clone()
     x.grad = None
 
     loss_std = out_std.sum()
     loss_std.backward()
     grad_std = x.grad.clone()
-    
-    grad_diff = (grad_flash - grad_std).abs().max().item()
+
+    grad_diff = (grad_v2 - grad_std).abs().max().item()
     grad_rel_diff = grad_diff / (grad_std.abs().max().item() + 1e-8)
-    # Gradients accumulate more numerical error through autograd, use looser tolerance
     if grad_rel_diff > 5e-4:
         print(f"❌ GRAD MISMATCH: Max Diff = {grad_diff}, Relative = {grad_rel_diff:.2e}")
     else:
-        print(f"✅ Gradients match (Max Diff: {grad_diff:.2e}, Relative: {grad_rel_diff:.2e})")
+        print(f"✅ Gradients match (Relative diff: {grad_rel_diff:.2e})")
 
     print("-" * 50)
 
     # --- Speed Benchmark ---
     iterations = 50
-    
+
     # 1. Benchmark Standard
-    torch.cuda.synchronize()
+    if device == "cuda":
+        torch.cuda.synchronize()
     start = time.time()
     for _ in range(iterations):
         _ = standard_attention_forward(x, wq, wk, wv, wo)
-    torch.cuda.synchronize()
+    if device == "cuda":
+        torch.cuda.synchronize()
     std_time = (time.time() - start) / iterations
-    
-    # 2. Benchmark Python Flash
-    torch.cuda.synchronize()
+
+    # 2. Benchmark FA v1
+    if device == "cuda":
+        torch.cuda.synchronize()
     start = time.time()
     for _ in range(iterations):
-        _ = flash_attention_forward(x, wq, wk, wv, wo, block_size=BLOCK_SIZE)
-    torch.cuda.synchronize()
-    flash_time = (time.time() - start) / iterations
+        _ = flash_attention_v1_forward(x, wq, wk, wv, wo, block_size=BLOCK_SIZE)
+    if device == "cuda":
+        torch.cuda.synchronize()
+    v1_time = (time.time() - start) / iterations
 
-    print(f"Standard Attention Time: {std_time*1000:.2f} ms")
-    print(f"Python Flash Attn Time:  {flash_time*1000:.2f} ms")
-    print(f"Ratio (Std / Flash):     {std_time/flash_time:.2f}x")
-    
-    print("\nNOTE: This Python implementation will be SLOWER than Standard Attention.")
-    print("Why? Because PyTorch Standard Attention calls a single fused C++ kernel.")
-    print("Your loop is launching O((S/Block)^2) separate kernels from Python.")
-    print("To see the speedup, this logic MUST be written in Triton or CUDA.")
+    # 3. Benchmark FA v2
+    if device == "cuda":
+        torch.cuda.synchronize()
+    start = time.time()
+    for _ in range(iterations):
+        _ = flash_attention_v2_forward(x, wq, wk, wv, wo, block_size=BLOCK_SIZE)
+    if device == "cuda":
+        torch.cuda.synchronize()
+    v2_time = (time.time() - start) / iterations
+
+    print(f"\nStandard Attention: {std_time*1000:.2f} ms")
+    print(f"Flash Attention v1: {v1_time*1000:.2f} ms")
+    print(f"Flash Attention v2: {v2_time*1000:.2f} ms")
+    print(f"v1/v2 ratio:        {v1_time/v2_time:.2f}x")
+
+    print("\nNOTE: These Python implementations will be SLOWER than Standard Attention.")
+    print("The v1/v2 ratio does NOT reflect the HBM savings because:")
+    print("  1. PyTorch abstracts memory - no real SRAM vs HBM distinction")
+    print("  2. Python loop overhead dominates actual compute")
+    print("  3. Each loop iteration launches separate CUDA kernels")
+    print("To see real speedups, this must be written in Triton or CUDA.")
 
 if __name__ == "__main__":
     benchmark()

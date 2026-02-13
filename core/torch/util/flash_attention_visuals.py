@@ -625,6 +625,189 @@ def plot_tile_size_heatmap():
     print("Saved: tile_size_heatmap.png")
 
 
+def plot_fa1_vs_fa2():
+    """
+    Compares Flash Attention v1 vs v2 HBM access patterns.
+
+    Left panel: Scaling plot showing HBM bytes transferred vs sequence length
+    Right panel: Breakdown bar chart at fixed S showing where savings come from
+
+    Key difference:
+    - FA1: outer loop K,V, inner loop Q → O written Tc times per Q block
+    - FA2: outer loop Q, inner loop K,V → O written once per Q block
+    """
+    with plt.style.context('default'):
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+        # === Parameters ===
+        d = 64
+        Br = 256  # block size (Br = Bc)
+
+        # === Sequence lengths for scaling plot ===
+        seq_lengths = np.logspace(np.log10(256), np.log10(65536), 100)
+
+        # === HBM access calculations ===
+        def fa1_hbm_bytes(S, d, Br):
+            """
+            FA1: outer K,V (Tc iters), inner Q (Tr iters)
+            - K: loaded once in outer loop = S*d
+            - V: loaded once in outer loop = S*d
+            - Q: loaded Tc times (once per outer iter) = S*d * Tc
+            - O: read Tc times (accumulate) = S*d * Tc
+            - O: write Tc times = S*d * Tc
+            Total elements: 2*S*d + 3*S*d*Tc = 2*S*d + 3*S²*d/Br
+            """
+            Tc = S / Br
+            elements = 2 * S * d + 3 * S * d * Tc
+            return elements * 2  # FP16
+
+        def fa2_hbm_bytes(S, d, Br):
+            """
+            FA2: outer Q (Tr iters), inner K,V (Tc iters)
+            - Q: loaded once in outer loop = S*d
+            - K: loaded Tr times (once per Q block) = S*d * Tr
+            - V: loaded Tr times = S*d * Tr
+            - O: written once (no read-back needed) = S*d
+            Total elements: 2*S*d + 2*S*d*Tr = 2*S*d + 2*S²*d/Br
+            """
+            Tr = S / Br
+            elements = 2 * S * d + 2 * S * d * Tr
+            return elements * 2  # FP16
+
+        def fa1_breakdown(S, d, Br):
+            """Return breakdown of HBM accesses for FA1 (in bytes)"""
+            Tc = S / Br
+            return {
+                'Q read': S * d * Tc * 2,      # read Tc times
+                'K read': S * d * 2,            # read once (outer loop)
+                'V read': S * d * 2,            # read once (outer loop)
+                'O read': S * d * Tc * 2,      # read Tc times (accumulate)
+                'O write': S * d * Tc * 2      # write Tc times
+            }
+
+        def fa2_breakdown(S, d, Br):
+            """Return breakdown of HBM accesses for FA2 (in bytes)"""
+            Tr = S / Br
+            return {
+                'Q read': S * d * 2,            # read once (outer loop)
+                'K read': S * d * Tr * 2,      # read Tr times
+                'V read': S * d * Tr * 2,      # read Tr times
+                'O read': 0,                    # never read back!
+                'O write': S * d * 2           # write once
+            }
+
+        # ============ LEFT PANEL: Scaling plot ============
+        fa1_bytes = np.array([fa1_hbm_bytes(S, d, Br) for S in seq_lengths])
+        fa2_bytes = np.array([fa2_hbm_bytes(S, d, Br) for S in seq_lengths])
+
+        # Convert to GB
+        fa1_gb = fa1_bytes / (1024**3)
+        fa2_gb = fa2_bytes / (1024**3)
+
+        ax1.set_xscale('log')
+        ax1.set_yscale('log')
+
+        # Plot lines
+        ax1.plot(seq_lengths, fa1_gb, color='#e63946', linewidth=3,
+                label='FA1: 2Sd + 3S²d/Br', linestyle='--')
+        ax1.plot(seq_lengths, fa2_gb, color='#2a9d8f', linewidth=3,
+                label='FA2: 2Sd + 2S²d/Br')
+
+        # Fill the difference
+        ax1.fill_between(seq_lengths, fa2_gb, fa1_gb, alpha=0.2, color='#2a9d8f',
+                        label='FA2 savings')
+
+        # Annotate ratio at specific points
+        for S_mark in [4096, 16384]:
+            idx = np.argmin(np.abs(seq_lengths - S_mark))
+            ratio = fa1_bytes[idx] / fa2_bytes[idx]
+            ax1.annotate(f'{ratio:.1f}× less',
+                        xy=(seq_lengths[idx], fa2_gb[idx]),
+                        xytext=(seq_lengths[idx] * 0.4, fa2_gb[idx] * 0.3),
+                        fontsize=10, color='#2a9d8f',
+                        arrowprops=dict(arrowstyle='->', color='#2a9d8f', alpha=0.7))
+
+        ax1.set_xlabel('Sequence Length (S)', fontsize=12)
+        ax1.set_ylabel('HBM Bytes Transferred (GB)', fontsize=12)
+        ax1.set_title(f'HBM Traffic Scaling\nd={d}, Br={Br}', fontsize=12)
+        ax1.legend(loc='upper left', fontsize=10)
+        ax1.grid(True, which='both', alpha=0.3)
+        ax1.set_xlim(256, 65536)
+
+        # ============ RIGHT PANEL: Breakdown bar chart ============
+        S_fixed = 4096  # Fixed sequence length for breakdown
+
+        fa1_bd = fa1_breakdown(S_fixed, d, Br)
+        fa2_bd = fa2_breakdown(S_fixed, d, Br)
+
+        # Convert to MB for readability
+        categories = ['Q read', 'K read', 'V read', 'O read', 'O write']
+        fa1_values = np.array([fa1_bd[cat] for cat in categories]) / (1024**2)
+        fa2_values = np.array([fa2_bd[cat] for cat in categories]) / (1024**2)
+
+        x = np.arange(len(categories))
+        width = 0.35
+
+        # Colors for each category
+        cat_colors = ['#457b9d', '#457b9d', '#457b9d', '#e63946', '#e63946']
+
+        bars1 = ax2.bar(x - width/2, fa1_values, width, label='FA1',
+                       color=[c if v > 0 else 'white' for c, v in zip(cat_colors, fa1_values)],
+                       edgecolor='black', alpha=0.7, hatch='///')
+        bars2 = ax2.bar(x + width/2, fa2_values, width, label='FA2',
+                       color=[c if v > 0 else 'white' for c, v in zip(cat_colors, fa2_values)],
+                       edgecolor='black', alpha=0.9)
+
+        # Add value labels (show actual values, even small ones)
+        for bar, val in zip(bars1, fa1_values):
+            label = f'{val:.1f}' if val < 1 else f'{val:.0f}'
+            y_pos = max(bar.get_height(), 0.3)  # minimum height for visibility
+            ax2.annotate(label,
+                        xy=(bar.get_x() + bar.get_width()/2, y_pos),
+                        xytext=(0, 3), textcoords='offset points',
+                        ha='center', va='bottom', fontsize=8, color='#e63946')
+
+        for bar, val in zip(bars2, fa2_values):
+            if val == 0:
+                label = '0'
+            elif val < 1:
+                label = f'{val:.1f}'
+            else:
+                label = f'{val:.0f}'
+            y_pos = max(bar.get_height(), 0.3)
+            ax2.annotate(label,
+                        xy=(bar.get_x() + bar.get_width()/2, y_pos),
+                        xytext=(0, 3), textcoords='offset points',
+                        ha='center', va='bottom', fontsize=8, color='#2a9d8f')
+
+        # Highlight the key difference
+        ax2.annotate('Key difference:\nFA2 never reads O back',
+                    xy=(3.5, max(fa1_values[3], fa1_values[4]) * 0.5),
+                    fontsize=9, ha='center', style='italic', color='gray',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(categories, fontsize=10)
+        ax2.set_ylabel('HBM Bytes (MB)', fontsize=12)
+        ax2.set_title(f'HBM Access Breakdown at S={S_fixed}\nFA1 vs FA2', fontsize=12)
+        ax2.legend(loc='upper right', fontsize=10)
+        ax2.grid(True, axis='y', alpha=0.3)
+
+        # Add total comparison
+        fa1_total = sum(fa1_values)
+        fa2_total = sum(fa2_values)
+        ratio = fa1_total / fa2_total
+        ax2.text(0.02, 0.98, f'Total: FA1={fa1_total:.0f}MB, FA2={fa2_total:.0f}MB\nFA2 is {ratio:.1f}× more efficient',
+                transform=ax2.transAxes, fontsize=10, va='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+
+        plt.suptitle('Flash Attention v1 vs v2: Theoretical HBM Access Comparison\n(Both produce identical output - difference is memory access pattern)', fontsize=12, y=1.02)
+        plt.tight_layout()
+        plt.savefig('/home/olivier/ml/image/flash_attention/fa1_vs_fa2.png', dpi=150, bbox_inches='tight')
+        plt.close()
+        print("Saved: fa1_vs_fa2.png")
+
+
 if __name__ == '__main__':
     print("Generating Flash Attention visualizations...\n")
 
@@ -633,5 +816,6 @@ if __name__ == '__main__':
     plot_arithmetic_intensity()
     plot_performance_vs_block_size()
     plot_tile_size_heatmap()
+    plot_fa1_vs_fa2()
 
     print("\nAll visualizations saved to /home/olivier/ml/image/flash_attention/")
