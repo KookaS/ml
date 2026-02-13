@@ -30,6 +30,25 @@ Here are the modern implementations of LLM architecture, sharding strategies and
 
 </details>
 
+#### Flash Attention
+
+- Flash Attention v2 in [PyTorch](core/torch/attention_flash.py)
+
+<details>
+<summary>📊 Flash Attention Visualizations</summary>
+
+See [image/flash_attention/README.md](image/flash_attention/README.md) for details.
+
+| Performance vs Block Size | Memory: HBM vs SRAM |
+|:---:|:---:|
+| ![Performance](image/flash_attention/performance_vs_block_size.png) | ![Memory](image/flash_attention/memory_scaling.png) |
+
+| Tile Size vs Latency | Br × Bc Heatmap |
+|:---:|:---:|
+| ![Latency](image/flash_attention/tile_size_vs_latency.png) | ![Heatmap](image/flash_attention/tile_size_heatmap.png) |
+
+</details>
+
 ## Sharding strategies
 
 - MLP Data Parallelism(DP) in [PyTorch](core/torch/sharding/mlp_dp.py), in [JAX](core/jax/sharding/mlp_dp.py)

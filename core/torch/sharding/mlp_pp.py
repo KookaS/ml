@@ -98,6 +98,7 @@ def worker_fn(rank, world_size):
     model.load_checkpoint(params)
 
     x = torch.randn(B, D, dtype=torch.bfloat16, device=device)
+    # TODO: microbatching
     out = model.forward(x) # None or Tensor if last
 
     # simulated loss gradient (dLoss/dOut)
