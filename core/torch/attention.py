@@ -2,6 +2,7 @@ import torch
 
 from core.torch.softmax import d_softmax, softmax
 
+
 class AttentionFn(torch.autograd.Function):
     """
     Multi head attention
@@ -28,29 +29,29 @@ class AttentionFn(torch.autograd.Function):
         att[B, S, D] = qkv[B, S, N, H] @ Wo[B, D, N, H]
         """
 
-        q = torch.einsum('bsd,dnh->bsnh', x, wq)
-        k = torch.einsum('btd,dnh->btnh', x, wk)
-        v = torch.einsum('btd,dnh->btnh', x, wv)
+        q = torch.einsum("bsd,dnh->bsnh", x, wq)
+        k = torch.einsum("btd,dnh->btnh", x, wk)
+        v = torch.einsum("btd,dnh->btnh", x, wv)
 
         # SCALING
-        qk = torch.einsum('bsnh,btnh->bsnt', q, k) # contract over head dimensions
-        qk /= q.shape[-1]**0.5
+        qk = torch.einsum("bsnh,btnh->bsnt", q, k)  # contract over head dimensions
+        qk /= q.shape[-1] ** 0.5
 
         # MASKING for training only (decoder only)
         seq = qk.shape[1]
-        mask = torch.arange(seq)[:, None] >= torch.arange(seq)[None, :] 
+        mask = torch.arange(seq)[:, None] >= torch.arange(seq)[None, :]
         mask = torch.where(mask, 0.0, -torch.inf)
-        qk += mask[None, :, None, :] # B S N T
+        qk += mask[None, :, None, :]  # B S N T
         # mask = torch.tril(torch.ones(S, T)) == 0
         # qk = qk.masked_fill(mask, float('-inf'))
 
         # ATTENTION SCORE
         # for every query, we distribute 100% of its attention capacity across the available keys
-        scores = softmax(qk, dim=-1) # the -inf will turn to 0 with softmax
+        scores = softmax(qk, dim=-1)  # the -inf will turn to 0 with softmax
 
-        qkv = torch.einsum('bsnt,btnh->bsnh', scores, v)
-        
-        attention = torch.einsum('bsnh,dnh->bsd', qkv, wo)
+        qkv = torch.einsum("bsnt,btnh->bsnh", scores, v)
+
+        attention = torch.einsum("bsnh,dnh->bsd", qkv, wo)
 
         # # RESIDUAL CONNECTION (for vanishing gradient problem)
         # x += attention
@@ -103,19 +104,19 @@ class AttentionFn(torch.autograd.Function):
 
         # 1. Backprop through Wo
         # d_attention / d_wo
-        qkv = torch.einsum('bsnt,btnh->bsnh', scores, v)
-        d_wo = torch.einsum('bsnh,bsd->dnh', qkv, grad_out)
+        qkv = torch.einsum("bsnt,btnh->bsnh", scores, v)
+        d_wo = torch.einsum("bsnh,bsd->dnh", qkv, grad_out)
 
         # 2. Backprop through Wv
-        d_qkv = torch.einsum('bsd,dnh->bsnh', grad_out, wo)
-        d_v = torch.einsum('bsnt,bsnh->btnh', scores, d_qkv)
-        d_wv = torch.einsum('btd,btnh->dnh', x, d_v)
+        d_qkv = torch.einsum("bsd,dnh->bsnh", grad_out, wo)
+        d_v = torch.einsum("bsnt,bsnh->btnh", scores, d_qkv)
+        d_wv = torch.einsum("btd,btnh->dnh", x, d_v)
 
         # 3. Backprop through softmax
-        d_scores = torch.einsum('bsnh,btnh->bsnt', d_qkv, v)
+        d_scores = torch.einsum("bsnh,btnh->bsnt", d_qkv, v)
         d_qk = d_softmax(d_scores, scores, dim=-1)
         # d_qk = scores * (d_scores - (d_scores * scores).sum(dim=-1, keepdims=True))
-        d_qk /= q.shape[-1]**0.5
+        d_qk /= q.shape[-1] ** 0.5
 
         # 4. Backprop through masking
         # We don't need to explicitly "remove" the mask.
@@ -123,22 +124,23 @@ class AttentionFn(torch.autograd.Function):
         # so d_qk_scaled becomes 0.
 
         # 5. Backprop through Wq
-        d_q = torch.einsum('bsnt,btnh->bsnh', d_qk, k)
-        d_wq = torch.einsum('bsd,bsnh->dnh', x, d_q)
+        d_q = torch.einsum("bsnt,btnh->bsnh", d_qk, k)
+        d_wq = torch.einsum("bsd,bsnh->dnh", x, d_q)
 
         # 6. Backprop through Wk
-        d_k = torch.einsum('bsnh,bsnt->btnh', q, d_qk)
-        d_wk = torch.einsum('btd,btnh->dnh', x, d_k)
+        d_k = torch.einsum("bsnh,bsnt->btnh", q, d_qk)
+        d_wk = torch.einsum("btd,btnh->dnh", x, d_k)
 
         # 7. Backprop through X
-        d_xq = torch.einsum('dnh,bsnh->bsd', wq, d_q)
-        d_xk = torch.einsum('dnh,btnh->btd', wk, d_k)
-        d_xv = torch.einsum('dnh,btnh->btd', wv, d_v)
+        d_xq = torch.einsum("dnh,bsnh->bsd", wq, d_q)
+        d_xk = torch.einsum("dnh,btnh->btd", wk, d_k)
+        d_xv = torch.einsum("dnh,btnh->btd", wv, d_v)
         d_x = d_xq + d_xk + d_xv
 
         # forward was given x, wq, wk, wv, wo
         return d_x, d_wq, d_wk, d_wv, d_wo
-    
+
+
 class Attention(torch.nn.Module):
     def __init__(self, d_model, n_heads, head_dim):
         super().__init__()
@@ -158,11 +160,11 @@ class Attention(torch.nn.Module):
     def load_checkpoint(self, params):
         # we change the memory, we don't rebuild the graph
         with torch.no_grad():
-            self.wq.copy_(params['wq'])
-            self.wk.copy_(params['wk'])
-            self.wv.copy_(params['wv'])
-            self.wo.copy_(params['wo'])
-        
+            self.wq.copy_(params["wq"])
+            self.wk.copy_(params["wk"])
+            self.wv.copy_(params["wv"])
+            self.wo.copy_(params["wo"])
+
     def forward(self, x):
         # We pass our weights into the static function
         return AttentionFn.apply(x, self.wq, self.wk, self.wv, self.wo)
@@ -170,16 +172,18 @@ class Attention(torch.nn.Module):
 
 if __name__ == "__main__":
     D, N = 64, 8
-    H = D//N
-    B, S = 2, 10 # batch, tokens per batch
+    H = D // N
+    B, S = 2, 10  # batch, tokens per batch
 
     torch.manual_seed(42)
-    x = torch.randn(B, S, D, dtype=torch.float32, requires_grad=True) # bf16 usually for mixed-precision
+    x = torch.randn(
+        B, S, D, dtype=torch.float32, requires_grad=True
+    )  # bf16 usually for mixed-precision
     params = {
-        'wq': torch.randn(D, N, H, dtype=torch.float32),
-        'wk': torch.randn(D, N, H, dtype=torch.float32),
-        'wv': torch.randn(D, N, H, dtype=torch.float32),
-        'wo': torch.randn(D, N, H, dtype=torch.float32),
+        "wq": torch.randn(D, N, H, dtype=torch.float32),
+        "wk": torch.randn(D, N, H, dtype=torch.float32),
+        "wv": torch.randn(D, N, H, dtype=torch.float32),
+        "wo": torch.randn(D, N, H, dtype=torch.float32),
     }
 
     model = Attention(D, N, H)

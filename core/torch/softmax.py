@@ -1,7 +1,7 @@
 import torch
 
+
 class _SoftmaxFn(torch.autograd.Function):
-    
     @staticmethod
     def forward(ctx, x, dim=-1):
         """
@@ -9,11 +9,11 @@ class _SoftmaxFn(torch.autograd.Function):
 
         Formula:
             s = e^x / sum(e^x)
-        
+
         :param x: Input [B, S, N, H]
         :return: Output [B, S, N, H]
         """
-        emax = torch.max(x, dim=dim, keepdim=True).values # prevent overflow
+        emax = torch.max(x, dim=dim, keepdim=True).values  # prevent overflow
         ex = torch.exp(x - emax)
         s = ex / torch.sum(ex, dim=dim, keepdim=True)
 
@@ -21,7 +21,7 @@ class _SoftmaxFn(torch.autograd.Function):
         ctx.s_dim = dim
 
         return s
-    
+
     @staticmethod
     def backward(ctx, grad_out):
         """
@@ -76,60 +76,63 @@ class _SoftmaxFn(torch.autograd.Function):
         Final Formula:
             grad_input = s * (grad_output - sum(grad_output * s))
 
-        
+
         :param x: grad_output is dL/ds [B, S, N, H]
         :return: grad_input is dL/dx [B, S, N, H]
         """
-        s, = ctx.saved_tensors # unpack tuple
+        (s,) = ctx.saved_tensors  # unpack tuple
         s_dim = ctx.s_dim
 
         term = (grad_out * s).sum(dim=s_dim, keepdim=True)
         grad_input = s * (grad_out - term)
-        
+
         # Return gradients for both inputs (x, dim)
         return grad_input, None
-
 
 
 def softmax(x, dim=-1):
     """
     Call softmax as a function.
-    
+
     :param x: Input
     :param dim: Dimension on which to operate, default -1.
     """
     return _SoftmaxFn.apply(x, dim)
 
+
 def d_softmax(grad_out, s, dim=-1):
     """
     Call softmax as a function.
-    
+
     :param x: Input
     :param dim: Dimension on which to operate, default -1.
     """
+
     class MockContext:
         def __init__(self, saved_tensors, s_dim):
             self.saved_tensors = saved_tensors
             self.s_dim = s_dim
+
     ctx = MockContext(saved_tensors=(s,), s_dim=dim)
     dx, _ = _SoftmaxFn.backward(ctx, grad_out)
     return dx
 
+
 class Softmax(torch.nn.Module):
     def __init__(self):
         super().__init__()
-    
+
     def forward(self, x, dim=-1):
         """
         Call softmax as a torch.nn module.
-        
+
         :param x: Input
         :param dim: Dimension on which to operate, default -1.
         """
         return _SoftmaxFn.apply(x, dim)
 
-if __name__ == "__main__":
 
+if __name__ == "__main__":
     # Create random input [Batch, Seq, Num, Head]
     B, S, N, H = 2, 5, 4, 8
     x = torch.randn(B, S, N, H, requires_grad=True)
@@ -153,6 +156,7 @@ if __name__ == "__main__":
     loss_ref.backward()
 
     import numpy as np
+
     np.testing.assert_array_almost_equal(x.grad, x_ref.grad)
 
     diff = torch.max(torch.abs(x.grad - x_ref.grad))

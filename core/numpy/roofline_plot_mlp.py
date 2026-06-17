@@ -1,9 +1,9 @@
 import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
 import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
 
 # Hardware parameters (H100)
-h100_bandwidth = 3.35e12   # HBM bandwidth bytes/s
+h100_bandwidth = 3.35e12  # HBM bandwidth bytes/s
 h100_peak_flops = 9.89e14  # bfloat16 FLOPs/s
 
 # Critical intensity (where roofline transitions from memory to compute bound)
@@ -16,6 +16,7 @@ F = 4 * D  # 32768
 bytes_per_param = 2  # bf16
 # batch_tokens for MLP is B * S
 
+
 def compute_mlp_intensity(B, D, F, bytes_per_param=2):
     """
     Compute arithmetic intensity for MLP
@@ -24,22 +25,26 @@ def compute_mlp_intensity(B, D, F, bytes_per_param=2):
     # As B grows, D and F becomes negligeable
 
     # 1. H[B,F] = X[B,D] @ W1[D,F]
-    communication_1 = bytes_per_param * (B*D + D*F + B*F)
-    compute_1 = 2 * B*D*F
+    communication_1 = bytes_per_param * (B * D + D * F + B * F)
+    compute_1 = 2 * B * D * F
 
     # 2. Y[B,D] = H[B,F] @ W2[F,D]
-    communication_2 =  bytes_per_param * (B*F + F*D + B*D)
-    compute_2 =  2 * B*F*D
+    communication_2 = bytes_per_param * (B * F + F * D + B * D)
+    compute_2 = 2 * B * F * D
 
     return (compute_1 + compute_2) / (communication_1 + communication_2)
+
 
 def roofline_perf(intensity, bandwidth, peak_flops):
     """Achievable performance given arithmetic intensity"""
     return np.minimum(intensity * bandwidth, peak_flops)
 
+
 # Create smooth batch size range for gradient
 batch_sizes = np.logspace(0, 7, 500)  # 1 to 10M tokens
-intensities_mlp = np.array([compute_mlp_intensity(bs, D, F, bytes_per_param) for bs in batch_sizes])
+intensities_mlp = np.array(
+    [compute_mlp_intensity(bs, D, F, bytes_per_param) for bs in batch_sizes]
+)
 performances = roofline_perf(intensities_mlp, h100_bandwidth, h100_peak_flops)
 
 # Find optimal batch size (closest to critical intensity)
@@ -52,8 +57,9 @@ optimal_perf = performances[optimal_idx]
 fig, ax = plt.subplots(figsize=(10, 6))
 
 # Custom colormap: blue -> red -> green
-colors_list = ['blue', 'red', 'green']
-cmap = LinearSegmentedColormap.from_list('batch_size', colors_list)
+colors_list = ["blue", "red", "green"]
+cmap = LinearSegmentedColormap.from_list("batch_size", colors_list)
+
 
 # Create color gradient based on position relative to critical intensity
 def get_color_value(intensity):
@@ -68,48 +74,69 @@ def get_color_value(intensity):
     else:
         return 0.5 + 0.5 * (log_int - log_crit) / (log_max - log_crit)
 
+
 # Plot gradient line using short segments
 for i in range(len(intensities_mlp) - 1):
     color_val = get_color_value(intensities_mlp[i])
-    ax.plot(intensities_mlp[i:i+2], performances[i:i+2],
-            color=cmap(color_val), linewidth=4, solid_capstyle='round')
+    ax.plot(
+        intensities_mlp[i : i + 2],
+        performances[i : i + 2],
+        color=cmap(color_val),
+        linewidth=4,
+        solid_capstyle="round",
+    )
 
-ax.set_xscale('log')
-ax.set_yscale('log')
+ax.set_xscale("log")
+ax.set_yscale("log")
 
 # Mark optimal point
-ax.plot(optimal_intensity, optimal_perf, 'o', color='red', markersize=14,
-        markeredgecolor='white', markeredgewidth=2, zorder=5)
+ax.plot(
+    optimal_intensity,
+    optimal_perf,
+    "o",
+    color="red",
+    markersize=14,
+    markeredgecolor="white",
+    markeredgewidth=2,
+    zorder=5,
+)
 
 # Add colorbar
 sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(0, 1))
 sm.set_array([])
 cbar = plt.colorbar(sm, ax=ax, pad=0.02)
 cbar.set_ticks([0, 0.5, 1])
-cbar.set_ticklabels(['Low batch\n(memory bound)', 'Optimal', 'High batch\n(compute bound)'])
+cbar.set_ticklabels(
+    ["Low batch\n(memory bound)", "Optimal", "High batch\n(compute bound)"]
+)
 
 # Annotate optimal point
-ax.annotate(f'Optimal\nB={optimal_batch:.0f}\nI={optimal_intensity:.0f}',
-            xy=(optimal_intensity, optimal_perf),
-            xytext=(optimal_intensity*0.12, optimal_perf*0.35),
-            fontsize=10, arrowprops=dict(arrowstyle='->', color='red'))
+ax.annotate(
+    f"Optimal\nB={optimal_batch:.0f}\nI={optimal_intensity:.0f}",
+    xy=(optimal_intensity, optimal_perf),
+    xytext=(optimal_intensity * 0.12, optimal_perf * 0.35),
+    fontsize=10,
+    arrowprops=dict(arrowstyle="->", color="red"),
+)
 
 # Labels and formatting
-ax.set_xlabel('Arithmetic Intensity (FLOPs/byte)', fontsize=12)
-ax.set_ylabel('Performance (FLOPs/s)', fontsize=12)
-ax.set_title(f'Roofline Model - H100 GPU (BF16)\nMLP: D={D}, F={F} (varying B)', fontsize=14)
+ax.set_xlabel("Arithmetic Intensity (FLOPs/byte)", fontsize=12)
+ax.set_ylabel("Performance (FLOPs/s)", fontsize=12)
+ax.set_title(
+    f"Roofline Model - H100 GPU (BF16)\nMLP: D={D}, F={F} (varying B)", fontsize=14
+)
 ax.set_xlim(0.1, 10000)
 ax.set_ylim(1e11, 2e15)
-ax.grid(True, which='both', alpha=0.3)
+ax.grid(True, which="both", alpha=0.3)
 
 plt.tight_layout()
-plt.savefig('image/roofline/roofline_plot_mlp.png', dpi=150, bbox_inches='tight')
+plt.savefig("image/roofline/roofline_plot_mlp.png", dpi=150, bbox_inches="tight")
 plt.show()
 
-print(f"Roofline Analysis (H100 BF16):")
-print(f"  Peak FLOPs/s: {h100_peak_flops/1e12:.0f} TFLOPs/s")
-print(f"  HBM Bandwidth: {h100_bandwidth/1e12:.2f} TB/s")
+print("Roofline Analysis (H100 BF16):")
+print(f"  Peak FLOPs/s: {h100_peak_flops / 1e12:.0f} TFLOPs/s")
+print(f"  HBM Bandwidth: {h100_bandwidth / 1e12:.2f} TB/s")
 print(f"  Critical Intensity: {critical_intensity:.1f} FLOPs/byte")
 print(f"\nOptimal Batch Size: {optimal_batch:,} tokens")
 print(f"  Intensity: {optimal_intensity:.1f} FLOPs/byte")
-print(f"  Performance: {optimal_perf/1e12:.1f} TFLOPs/s")
+print(f"  Performance: {optimal_perf / 1e12:.1f} TFLOPs/s")

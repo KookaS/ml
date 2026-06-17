@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def softmax(x, dim=-1):
     """
     softmax for one element of a vector: softmax(x_i) = e^x_i / sum_j(e^x_j)
@@ -9,5 +10,5 @@ def softmax(x, dim=-1):
     x: vector of size j
     return: vector with softmax applied to every element
     """
-    e_x = np.exp(x - np.max(x, axis=dim, keepdims=True)) # max prevent overflow
+    e_x = np.exp(x - np.max(x, axis=dim, keepdims=True))  # max prevent overflow
     return e_x / np.sum(e_x, axis=dim, keepdims=True)

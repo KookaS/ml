@@ -1,7 +1,7 @@
 import torch
 
-class _ResidualFn(torch.autograd.Function):
 
+class _ResidualFn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x_residual, x_prev):
         return x_residual + x_prev
@@ -18,10 +18,10 @@ class _ResidualFn(torch.autograd.Function):
         """
         return grad_out, grad_out
 
-class Residual(torch.nn.Module):
 
+class Residual(torch.nn.Module):
     def __init__(self):
         super().__init__()
-    
+
     def forward(self, x_residual, x_prev):
         return _ResidualFn.apply(x_residual, x_prev)

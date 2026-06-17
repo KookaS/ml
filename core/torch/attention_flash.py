@@ -1,19 +1,21 @@
-import torch
-import torch.nn as nn
 import math
 import time
+
+import torch
+
 
 def standard_attention_forward(x, wq, wk, wv, wo):
     S, d = x.shape
     q = x @ wq.t()
     k = x @ wk.t()
     v = x @ wv.t()
-    
+
     scores = (q @ k.t()) * (1 / math.sqrt(d))
     attn = torch.softmax(scores, dim=-1)
     o = attn @ v
     return o @ wo.t()
-    
+
+
 def flash_attention_v1_forward(x, wq, wk, wv, wo, block_size=64):
     """
     Flash Attention v1: outer loop over K,V blocks, inner loop over Q blocks.
@@ -30,12 +32,12 @@ def flash_attention_v1_forward(x, wq, wk, wv, wo, block_size=64):
     v = x @ wv.t()
 
     S, d = q.shape
-    scale = 1 / d**(0.5)
+    scale = 1 / d ** (0.5)
 
     # Global state stored in HBM (read/written each inner iteration)
     o = torch.zeros_like(q)
     m = torch.full((S, 1), -torch.inf, device=x.device)
-    l = torch.zeros((S, 1), device=x.device)
+    l = torch.zeros((S, 1), device=x.device)  # noqa: E741
 
     # Outer loop: K, V blocks (loaded once each)
     for j in range(0, S, block_size):
@@ -48,13 +50,13 @@ def flash_attention_v1_forward(x, wq, wk, wv, wo, block_size=64):
             i_end = min(i + block_size, S)
 
             # Load from HBM (happens every iteration - this is the inefficiency!)
-            q_tile = q[i:i_end, :]           # [Br, d]
-            o_tile = o[i:i_end, :].clone()   # [Br, d] - must read previous value
-            m_i = m[i:i_end, :].clone()      # [Br, 1]
-            l_i = l[i:i_end, :].clone()      # [Br, 1]
+            q_tile = q[i:i_end, :]  # [Br, d]
+            o_tile = o[i:i_end, :].clone()  # [Br, d] - must read previous value
+            m_i = m[i:i_end, :].clone()  # [Br, 1]
+            l_i = l[i:i_end, :].clone()  # [Br, 1]
 
             # Compute attention block
-            S_ij = torch.einsum('rd,cd->rc', q_tile, k_tile) * scale  # [Br, Bc]
+            S_ij = torch.einsum("rd,cd->rc", q_tile, k_tile) * scale  # [Br, Bc]
 
             # Update block state
             m_ij = torch.max(S_ij, axis=-1, keepdim=True).values
@@ -67,7 +69,9 @@ def flash_attention_v1_forward(x, wq, wk, wv, wo, block_size=64):
             new_scale = torch.exp(m_ij - m_new)
 
             l_new = (old_scale * l_i) + (new_scale * l_ij)
-            o_new = (old_scale * o_tile) + (new_scale * torch.einsum('rc,cd->rd', P_ij, v_tile))
+            o_new = (old_scale * o_tile) + (
+                new_scale * torch.einsum("rc,cd->rd", P_ij, v_tile)
+            )
 
             # Write back to HBM (happens every iteration!)
             o[i:i_end, :] = o_new
@@ -99,28 +103,28 @@ def flash_attention_v2_forward(x, wq, wk, wv, wo, block_size=64):
     v = x @ wv.t()
 
     S, d = q.shape
-    scale = 1 / d**(0.5)
+    scale = 1 / d ** (0.5)
     o = torch.zeros_like(q)
 
     # divide q into blocks
     for i in range(0, S, block_size):
         # load from HBM blocks and keep in SRAM
         i_end = min(i + block_size, S)
-        q_tile = q[i:i_end, :] # [Br, d]
+        q_tile = q[i:i_end, :]  # [Br, d]
 
         # initial state
-        m = torch.full((i_end-i, 1), -torch.inf, device=x.device)
-        l = torch.zeros((i_end-i, 1), device=x.device)
-        o_tile = torch.zeros((i_end-i, d), device=x.device) # [Br, d]
+        m = torch.full((i_end - i, 1), -torch.inf, device=x.device)
+        l = torch.zeros((i_end - i, 1), device=x.device)  # noqa: E741
+        o_tile = torch.zeros((i_end - i, d), device=x.device)  # [Br, d]
 
         # divide k, v into blocks
         for j in range(0, S, block_size):
             j_end = min(j + block_size, S)
-            k_tile = k[j:j_end, :] # [Bc, d]
-            v_tile = v[j:j_end, :] # [Bc, d]
+            k_tile = k[j:j_end, :]  # [Bc, d]
+            v_tile = v[j:j_end, :]  # [Bc, d]
 
             # attention block
-            S_ij = torch.einsum('rd,cd->rc', q_tile, k_tile) * scale # [Br, Bc]
+            S_ij = torch.einsum("rd,cd->rc", q_tile, k_tile) * scale  # [Br, Bc]
 
             # update block state
             m_ij = torch.max(S_ij, axis=-1, keepdim=True).values
@@ -129,11 +133,13 @@ def flash_attention_v2_forward(x, wq, wk, wv, wo, block_size=64):
 
             # update global state
             m_new = torch.max(m, m_ij)
-            old_scale = torch.exp(m - m_new) # shrink previous accumulated values
-            new_scale = torch.exp(m_ij - m_new) # shrink the new values
+            old_scale = torch.exp(m - m_new)  # shrink previous accumulated values
+            new_scale = torch.exp(m_ij - m_new)  # shrink the new values
 
-            l = (old_scale * l) + (new_scale * l_ij)
-            o_tile = (old_scale * o_tile) + (new_scale * torch.einsum('rc,cd->rd', P_ij, v_tile))
+            l = (old_scale * l) + (new_scale * l_ij)  # noqa: E741
+            o_tile = (old_scale * o_tile) + (
+                new_scale * torch.einsum("rc,cd->rd", P_ij, v_tile)
+            )
             m = m_new
 
         o[i:i_end, :] = o_tile / l
@@ -146,8 +152,8 @@ def benchmark():
     print(f"Running on: {device.upper()}")
 
     # Configuration
-    S = 2048 # Sequence Length
-    D = 128 # Head Dimension
+    S = 2048  # Sequence Length
+    D = 128  # Head Dimension
     BLOCK_SIZE = 128
 
     torch.manual_seed(42)
@@ -202,7 +208,9 @@ def benchmark():
     grad_diff = (grad_v2 - grad_std).abs().max().item()
     grad_rel_diff = grad_diff / (grad_std.abs().max().item() + 1e-8)
     if grad_rel_diff > 5e-4:
-        print(f"❌ GRAD MISMATCH: Max Diff = {grad_diff}, Relative = {grad_rel_diff:.2e}")
+        print(
+            f"❌ GRAD MISMATCH: Max Diff = {grad_diff}, Relative = {grad_rel_diff:.2e}"
+        )
     else:
         print(f"✅ Gradients match (Relative diff: {grad_rel_diff:.2e})")
 
@@ -241,17 +249,20 @@ def benchmark():
         torch.cuda.synchronize()
     v2_time = (time.time() - start) / iterations
 
-    print(f"\nStandard Attention: {std_time*1000:.2f} ms")
-    print(f"Flash Attention v1: {v1_time*1000:.2f} ms")
-    print(f"Flash Attention v2: {v2_time*1000:.2f} ms")
-    print(f"v1/v2 ratio:        {v1_time/v2_time:.2f}x")
+    print(f"\nStandard Attention: {std_time * 1000:.2f} ms")
+    print(f"Flash Attention v1: {v1_time * 1000:.2f} ms")
+    print(f"Flash Attention v2: {v2_time * 1000:.2f} ms")
+    print(f"v1/v2 ratio:        {v1_time / v2_time:.2f}x")
 
-    print("\nNOTE: These Python implementations will be SLOWER than Standard Attention.")
+    print(
+        "\nNOTE: These Python implementations will be SLOWER than Standard Attention."
+    )
     print("The v1/v2 ratio does NOT reflect the HBM savings because:")
     print("  1. PyTorch abstracts memory - no real SRAM vs HBM distinction")
     print("  2. Python loop overhead dominates actual compute")
     print("  3. Each loop iteration launches separate CUDA kernels")
     print("To see real speedups, this must be written in Triton or CUDA.")
+
 
 if __name__ == "__main__":
     benchmark()

@@ -1,7 +1,9 @@
-from typing import Sequence
+from collections.abc import Sequence
+
 import torch
 
 from core.torch.softmax import softmax
+
 
 class KVCache:
     def __init__(self, batch_size, max_sequence_length, num_heads, head_dim):
@@ -16,8 +18,12 @@ class KVCache:
 
         # pre-allocation, Paged-Attention improves this
         self.pointer = 0
-        self.k_cache = torch.empty((batch_size, max_sequence_length, num_heads, head_dim))
-        self.v_cache = torch.empty((batch_size, max_sequence_length, num_heads, head_dim))
+        self.k_cache = torch.empty(
+            (batch_size, max_sequence_length, num_heads, head_dim)
+        )
+        self.v_cache = torch.empty(
+            (batch_size, max_sequence_length, num_heads, head_dim)
+        )
 
     def prefill(self, k, v):
         """
@@ -28,14 +34,14 @@ class KVCache:
 
         if B != self.batch_size:
             raise ValueError(f"Batch size mismatch: {B} vs {self.batch_size}")
-        
+
         if S > self.max_sequence_length:
-             raise IndexError("Prompt is longer than cache capacity")
-        
+            raise IndexError("Prompt is longer than cache capacity")
+
         self.k_cache[:, :S] = k
         self.v_cache[:, :S] = v
         self.pointer = S
-    
+
     def decode(self, k_new, v_new):
         """
         Add a token to the KVCache.
@@ -43,13 +49,13 @@ class KVCache:
         """
         if k_new.shape[1] != 1:
             raise ValueError("key and value should have only one token")
-        
+
         if self.pointer >= self.max_sequence_length:
             raise IndexError("KV Cache is full")
-        
+
         # k_new is [B, 1, N, H] -> assign to [B, 1, N, H] slice
-        self.k_cache[:, self.pointer:self.pointer+1] = k_new
-        self.v_cache[:, self.pointer:self.pointer+1] = v_new
+        self.k_cache[:, self.pointer : self.pointer + 1] = k_new
+        self.v_cache[:, self.pointer : self.pointer + 1] = v_new
         self.pointer += 1
 
     def get(self):
@@ -57,10 +63,10 @@ class KVCache:
         Get the KVCache.
         """
         return (
-            self.k_cache[:, :self.pointer, :, :],
-            self.v_cache[:, :self.pointer, :, :],
+            self.k_cache[:, : self.pointer, :, :],
+            self.v_cache[:, : self.pointer, :, :],
         )
-    
+
     @staticmethod
     def fuse(*caches: "KVCache"):
         """
@@ -85,13 +91,14 @@ class KVCache:
         # fusion of non-contiguous memory into one big contiguous memory block
         # paged-attention improves this
         # only copy the tokens, not the whole memory of max_sequence_length
-        k_caches = [cache.k_cache[:, :cache.pointer] for cache in caches]
-        v_caches = [cache.v_cache[:, :cache.pointer] for cache in caches]
+        k_caches = [cache.k_cache[:, : cache.pointer] for cache in caches]
+        v_caches = [cache.v_cache[:, : cache.pointer] for cache in caches]
         kv_cache_fused.k_cache = torch.cat(k_caches, dim=0)
         kv_cache_fused.v_cache = torch.cat(v_caches, dim=0)
         kv_cache_fused.pointer = caches[0].pointer
-        
+
         return kv_cache_fused
+
 
 class _AttentionDisaggregatedFn:
     """
@@ -109,61 +116,62 @@ class _AttentionDisaggregatedFn:
         """
         During Prefill, the kv_cache is built in one pass, where all tokens of the prompt attend to each other. Since we process an entire sequence, we want to have a low batch size.
         """
-        q = torch.einsum('bsd,dnh->bsnh', x, wq)
-        k = torch.einsum('btd,dnh->btnh', x, wk)
-        v = torch.einsum('btd,dnh->btnh', x, wv)
+        q = torch.einsum("bsd,dnh->bsnh", x, wq)
+        k = torch.einsum("btd,dnh->btnh", x, wk)
+        v = torch.einsum("btd,dnh->btnh", x, wv)
 
         # KV CACHE saving for Decode
         kv_cache.prefill(k, v)
 
         # SCALING
-        qk = torch.einsum('bsnh,btnh->bsnt', q, k) # contract over head dimensions
-        qk /= q.shape[-1]**0.5
+        qk = torch.einsum("bsnh,btnh->bsnt", q, k)  # contract over head dimensions
+        qk /= q.shape[-1] ** 0.5
 
         # MASKING (only prefill)
         seq = qk.shape[1]
-        mask = torch.arange(seq)[:, None] >= torch.arange(seq)[None, :] 
+        mask = torch.arange(seq)[:, None] >= torch.arange(seq)[None, :]
         mask = torch.where(mask, 0.0, -torch.inf)
-        qk += mask[None, :, None, :] # B S N T
+        qk += mask[None, :, None, :]  # B S N T
 
         # ATTENTION SCORE
-        scores = softmax(qk, dim=-1) # the -inf will turn to 0 with softmax
+        scores = softmax(qk, dim=-1)  # the -inf will turn to 0 with softmax
 
-        qkv = torch.einsum('bsnt,btnh->bsnh', scores, v)
-        
-        attention = torch.einsum('bsnh,dnh->bsd', qkv, wo)
+        qkv = torch.einsum("bsnt,btnh->bsnh", scores, v)
+
+        attention = torch.einsum("bsnh,dnh->bsd", qkv, wo)
 
         return attention
-    
+
     @staticmethod
     def decode(x_new, wq, wk, wv, wo, kv_cache):
         """
         During Decode, we process one token at a time, therefore we want a large batch size.
         """
         # only process the last token, S=1
-        q = torch.einsum('bsd,dnh->bsnh', x_new, wq)
-        k = torch.einsum('bsd,dnh->bsnh', x_new, wk)
-        v = torch.einsum('bsd,dnh->bsnh', x_new, wv)
+        q = torch.einsum("bsd,dnh->bsnh", x_new, wq)
+        k = torch.einsum("bsd,dnh->bsnh", x_new, wk)
+        v = torch.einsum("bsd,dnh->bsnh", x_new, wv)
 
         # KV CACHE Updating with the latest token
         kv_cache.decode(k, v)
-        k,v = kv_cache.get()
+        k, v = kv_cache.get()
 
         # SCALING
-        qk = torch.einsum('bsnh,btnh->bsnt', q, k) # contract over head dimensions
-        qk /= q.shape[-1]**0.5
+        qk = torch.einsum("bsnh,btnh->bsnt", q, k)  # contract over head dimensions
+        qk /= q.shape[-1] ** 0.5
 
         # NO MASKING
 
         # ATTENTION SCORE
-        scores = softmax(qk, dim=-1) # the -inf will turn to 0 with softmax
+        scores = softmax(qk, dim=-1)  # the -inf will turn to 0 with softmax
 
-        qkv = torch.einsum('bsnt,btnh->bsnh', scores, v)
-        
-        attention = torch.einsum('bsnh,dnh->bsd', qkv, wo)
+        qkv = torch.einsum("bsnt,btnh->bsnh", scores, v)
+
+        attention = torch.einsum("bsnh,dnh->bsd", qkv, wo)
 
         return attention
-    
+
+
 class AttentionDisaggregated(torch.nn.Module):
     def __init__(self, d_model, n_heads, head_dim):
         super().__init__()
@@ -183,18 +191,28 @@ class AttentionDisaggregated(torch.nn.Module):
         torch.nn.init.xavier_normal_(self.wk)
         torch.nn.init.xavier_normal_(self.wv)
         torch.nn.init.xavier_normal_(self.wo)
-    
+
     def load_checkpoint(self, params):
         raise NotImplementedError
 
     def prefill(self, x, kv_cache):
-        return _AttentionDisaggregatedFn.prefill(x, self.wq, self.wk, self.wv, self.wo, kv_cache)
-    
+        return _AttentionDisaggregatedFn.prefill(
+            x, self.wq, self.wk, self.wv, self.wo, kv_cache
+        )
+
     def decode(self, x, kv_cache):
-        return _AttentionDisaggregatedFn.decode(x, self.wq, self.wk, self.wv, self.wo, kv_cache)    
+        return _AttentionDisaggregatedFn.decode(
+            x, self.wq, self.wk, self.wv, self.wo, kv_cache
+        )
 
 
-def inference_loop(x: Sequence[torch.Tensor], max_sequence_length: int, d_model: int, n_heads: int, head_dim: int):
+def inference_loop(
+    x: Sequence[torch.Tensor],
+    max_sequence_length: int,
+    d_model: int,
+    n_heads: int,
+    head_dim: int,
+):
     """
     Dummy inference loop to mimic disaggregated serving.
 
@@ -204,7 +222,7 @@ def inference_loop(x: Sequence[torch.Tensor], max_sequence_length: int, d_model:
                                               --> Cluster_decode --> fuse --> decode
                                             /
     Req2 --> Cluster_prefill_2 --> prefill /
-    
+
     There are two types of load balancers, with two types of clusters, each with their own dimensions and sharding strategy.
 
     :param x: list of prompts, each of shape [1, S, D]
@@ -214,7 +232,9 @@ def inference_loop(x: Sequence[torch.Tensor], max_sequence_length: int, d_model:
     _, S, D = x[0].shape
     print(f"[System] Incoming requests: {B}, Sequence Length: {S}, Model Dim: {D}")
     if S > max_sequence_length:
-        raise ValueError(f"Sequence length too long for context size {max_sequence_length}")
+        raise ValueError(
+            f"Sequence length too long for context size {max_sequence_length}"
+        )
 
     # each prefill and decode should have their own clusters with sharding strategies
     model = AttentionDisaggregated(d_model, n_heads, head_dim)
@@ -223,53 +243,61 @@ def inference_loop(x: Sequence[torch.Tensor], max_sequence_length: int, d_model:
     # PREFILL
     # KVCache with batch of 1
     batch_size_prefill = 1
-    requests = [] # mimic the requests between prefill and decode
+    requests = []  # mimic the requests between prefill and decode
     # this loop mimic the load balancer work
     for i in range(B):
         # model should be sharded with Tensor Parallelism(Megatron) for faster compute
-        kv_cache_prefill = KVCache(batch_size_prefill, max_sequence_length, n_heads, head_dim)
-        attention = model.prefill(x[i], kv_cache_prefill)
+        kv_cache_prefill = KVCache(
+            batch_size_prefill, max_sequence_length, n_heads, head_dim
+        )
+        model.prefill(x[i], kv_cache_prefill)
         # .... --> x_new
         x_new_prefill = torch.randn((batch_size_prefill, 1, D))
         # send kv_cache and x_new to another cluster made for decode
         requests.append((kv_cache_prefill, x_new_prefill))
         print(f"[Cluster Prefill {i}] Cache Size: {kv_cache_prefill.pointer}")
-    print(f"[Network] Sent {len(requests)} caches of size [{requests[0][0].pointer}] to [Cluster Decode 0]")
+    print(
+        f"[Network] Sent {len(requests)} caches of size [{requests[0][0].pointer}] to [Cluster Decode 0]"
+    )
 
     # KV CACHE FUSING
     # we mimic that all prefill requests are done simultaneously
     batch_size_decode = len(requests)
-    
-    
+
     # aggreagete all kv_caches received together
     kv_caches = [cache for cache, _ in requests]
     kv_cache_decode = KVCache.fuse(*kv_caches)
     del kv_caches
-    
+
     # aggregate all new tokens, [1, 1, D] -> [B, 1, D]
     x_new_batched = [x_new for _, x_new in requests]
     x_new_batched = torch.concatenate(x_new_batched, dim=0)
     del requests
-    
-    print(f"[Cluster Decode 0] Fused {batch_size_decode} caches, New Batch Size: {kv_cache_decode.batch_size}, Cache Pointer: {kv_cache_decode.pointer}")
 
-    # DECODE        
+    print(
+        f"[Cluster Decode 0] Fused {batch_size_decode} caches, New Batch Size: {kv_cache_decode.batch_size}, Cache Pointer: {kv_cache_decode.pointer}"
+    )
+
+    # DECODE
     # loop until the last token is <EOS>
-    for i in range(3): # dummy loop
+    for i in range(3):  # dummy loop
         # model should be sharded with DP or FSDP for maximizing throughput
-        attention = model.decode(x_new_batched, kv_cache_decode)
+        model.decode(x_new_batched, kv_cache_decode)
         # .... --> x_new
         x_new_batched = torch.randn_like(x_new_batched)
-        print(f"[Cluster Decode 0] Step {i+1}: Cache Pointer: {kv_cache_decode.pointer}")
+        print(
+            f"[Cluster Decode 0] Step {i + 1}: Cache Pointer: {kv_cache_decode.pointer}"
+        )
+
 
 if __name__ == "__main__":
     D = 16
     N = 4
     H = 4
-    
+
     # Simulate 2 user requests with exact same sequence length
     req1 = torch.randn(1, 10, D)
     req2 = torch.randn(1, 10, D)
-    
+
     max_sequence_length = 100
     inference_loop([req1, req2], max_sequence_length, D, N, H)

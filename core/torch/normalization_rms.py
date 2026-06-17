@@ -1,7 +1,7 @@
 import torch
 
-class _NormRmsFn(torch.autograd.Function):
 
+class _NormRmsFn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, gamma, eps=1e-6):
         """
@@ -11,7 +11,7 @@ class _NormRmsFn(torch.autograd.Function):
         Formula:
             y = x * gamma / r
             r = sqrt( eps + sum(x^2) / N), where N is the dim of x
-        
+
         :param x: Input [B, S, N, H]
         :param gain: scaling factor
         :param eps: optional denominator value for numerical stability
@@ -29,7 +29,7 @@ class _NormRmsFn(torch.autograd.Function):
 
         Formula:
             y = n(x)  / r(x), n(x) =x*gamma, r(x) = rms(x)
-            where i is index of contracting dimension            
+            where i is index of contracting dimension
 
             1. derivative for gamma dL/dgamma
             gamma is only shape [H], so we need to sum all other dimensions
@@ -38,12 +38,12 @@ class _NormRmsFn(torch.autograd.Function):
                         = grad_out *  d(x * gamma / r)/d_x
                                     = grad_out *  x/r
             --> dL/dgamma = sum_{B,S,N}(grad_out *  x/r [B, S, N, H]])
-            
+
             2. derivative along input dL/dx
             2.1 dL/dx {r} = sum(dL/dy * dy/dr) * dr/dx
             2.2 dL/dx {n} = dL/dy * dy/dn * dn/dx
             dL/dy = grad_out
-            
+
             --> 2.1
             dy/dr = -x * g / r^2
 
@@ -64,7 +64,7 @@ class _NormRmsFn(torch.autograd.Function):
 
             --> total
             dL/dx = grad_out * 1/r * g + sum(grad_out * -x * g / r^2) * x/(N* r)
-        
+
         :param x: grad_out is dL/dy [B, S, N, H]
         :return: d_gamma is dL/dgamma [H]
         :return: d_x is dL/dx [B, S, N, H]
@@ -78,23 +78,24 @@ class _NormRmsFn(torch.autograd.Function):
 
         # 2. backprop for input
         # dL/dx = grad_out * 1/r * g + sum(grad_out * -x * g / r^2) * x/(N * r)
-        d_x = grad_out * gamma/rms - (grad_out * x * gamma / rms**2).sum(dim=-1, keepdims=True) * x / (x.shape[-1] * rms)
+        d_x = grad_out * gamma / rms - (grad_out * x * gamma / rms**2).sum(
+            dim=-1, keepdims=True
+        ) * x / (x.shape[-1] * rms)
 
         return d_x, d_gamma, None
-    
-class NormRms(torch.nn.Module):
 
+
+class NormRms(torch.nn.Module):
     def __init__(self, head_dim, eps=1e-6):
         super().__init__()
         self.eps = eps
         self.weights = torch.nn.Parameter(torch.ones((head_dim,)))
-    
+
     def forward(self, x):
         return _NormRmsFn.apply(x, self.weights, self.eps)
 
 
 if __name__ == "__main__":
-
     # Create random input [Batch, Seq, Num, Head]
     B, S, N, H = 2, 5, 4, 8
     x = torch.randn(B, S, N, H, requires_grad=True)
@@ -114,11 +115,14 @@ if __name__ == "__main__":
     # --- Verification ---
     # Let's compare against PyTorch's built-in softmax to ensure correctness
     x_ref = x.clone().detach().requires_grad_(True)
-    out_ref = torch.nn.functional.rms_norm(x_ref, normalized_shape=(x.shape[-1],), weight=model.weights, eps=model.eps)
+    out_ref = torch.nn.functional.rms_norm(
+        x_ref, normalized_shape=(x.shape[-1],), weight=model.weights, eps=model.eps
+    )
     loss_ref = out_ref.sum()
     loss_ref.backward()
 
     import numpy as np
+
     np.testing.assert_array_almost_equal(x.grad, x_ref.grad)
 
     diff = torch.max(torch.abs(x.grad - x_ref.grad))

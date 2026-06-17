@@ -91,3 +91,11 @@ The following are roofline analysis for different architectures. Those are non-f
 - [Torch distributed API](https://docs.pytorch.org/docs/stable/distributed.html).
 - don't use the old primitives, instead use in-place ones like `dist.all_gather_into_tensor` and `dist.all_reduce_tensor` that aggregate along the primary dimension.
 - custom classes for training requires `torch.autograd.Function`, `@staticmethod` and [`ctx.save_for_backward`](https://docs.pytorch.org/docs/stable/generated/torch.autograd.function.FunctionCtx.save_for_backward.html)
+
+
+## Linter and Formater
+
+```bash
+uv run black . && uv run ruff check --fix .
+# uv run mypy .
+```
