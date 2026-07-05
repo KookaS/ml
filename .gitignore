@@ -3,3 +3,6 @@ trace/
 
 .venv/
 .vscode/
+
+.env
+weights/

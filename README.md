@@ -95,6 +95,15 @@ The following are roofline analysis for different architectures. Those are non-f
 
 ## Linter and Formater
 
+Install:
+```bash
+uv sync
+uv run pre-commit install
+# to test pre-commit
+uv run pre-commit run --all-files
+```
+
+Then use linters:
 ```bash
 uv run black . && uv run ruff check --fix .
 # uv run mypy .
